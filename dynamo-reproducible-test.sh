@@ -2,7 +2,7 @@
 set -euo pipefail
 
 ###############################################################################
-# Dynamo Platform Reproducible GPU Smoke Test (Qwen OK)
+# Dynamo Platform Reproducible GPU Smoke Test
 #
 # Validates:
 #  - GPUs are allocatable in K8s

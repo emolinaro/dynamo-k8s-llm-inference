@@ -4,12 +4,6 @@ set -euo pipefail
 ###############################################################################
 # Deploy a batched inference server (vLLM) for Qwen/Qwen3-0.6B on Kubernetes
 #
-# CORRECTION IMPLEMENTED:
-#  - DO NOT override `command:` to ["python", ...]
-#    Your cluster showed: exec: "python": executable file not found in $PATH
-#    for image vllm/vllm-openai:latest.
-#  - Instead, rely on the image ENTRYPOINT and only pass `args:`.
-#
 # NODEPORT UPDATE:
 #  - The Service is now exposed as type: NodePort (instead of ClusterIP).
 #  - The script prints the Node IP + NodePort so you can access the server
@@ -17,10 +11,11 @@ set -euo pipefail
 #
 # What this script does:
 #  1) Creates/updates a namespace
-#  2) Deploys a vLLM OpenAI-compatible server on 1 GPU with batching knobs
-#  3) Adds /dev/shm (shared memory) to avoid common PyTorch/vLLM issues
-#  4) Exposes it via a NodePort service
-#  5) Waits for rollout and prints the access URL
+#  2) Deploys a vLLM OpenAI-compatible server with batching knobs
+#  3) Supports multi-GPU via tensor parallelism (splits prefill/decode across GPUs)
+#  4) Adds /dev/shm (shared memory) to avoid common PyTorch/vLLM issues
+#  5) Exposes it via a NodePort service
+#  6) Waits for rollout and prints the access URL
 #
 # Usage:
 #  chmod +x deploy-qwen-vllm-batched.sh
@@ -51,6 +46,17 @@ ENABLE_CHUNKED_PREFILL="${ENABLE_CHUNKED_PREFILL:-true}"
 
 # GPU resources
 GPUS_PER_POD="${GPUS_PER_POD:-1}"
+
+# Tensor parallelism: splits model layers across GPUs within a node
+# When GPUS_PER_POD > 1, this enables prefill/decode splitting across GPUs
+# Defaults to GPUS_PER_POD when using multiple GPUs, set to empty string to disable
+if [[ -z "${TENSOR_PARALLEL_SIZE:-}" ]]; then
+  if [[ "${GPUS_PER_POD}" -gt 1 ]]; then
+    TENSOR_PARALLEL_SIZE="${GPUS_PER_POD}"
+  else
+    TENSOR_PARALLEL_SIZE=""
+  fi
+fi
 
 # Cache volume (model downloads)
 CACHE_SIZE="${CACHE_SIZE:-80Gi}"
@@ -120,6 +126,15 @@ if [[ "${ENABLE_CHUNKED_PREFILL}" == "true" ]]; then
   kubectl -n "${NS}" patch deploy "${NAME}" --type='json' -p='[
     {"op":"add","path":"/spec/template/spec/containers/0/args/-","value":"--enable-chunked-prefill"}
   ]' >/dev/null
+fi
+
+# Add tensor parallelism flag if using multiple GPUs
+if [[ "${GPUS_PER_POD}" -gt 1 ]] && [[ -n "${TENSOR_PARALLEL_SIZE}" ]] && [[ "${TENSOR_PARALLEL_SIZE}" =~ ^[0-9]+$ ]] && [[ "${TENSOR_PARALLEL_SIZE}" -gt 1 ]]; then
+  echo -e "\n==> Configuring tensor parallelism (${TENSOR_PARALLEL_SIZE} GPUs) for prefill/decode splitting..."
+  kubectl -n "${NS}" patch deploy "${NAME}" --type='json' -p="[
+    {\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\":\"--tensor-parallel-size\"},
+    {\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/args/-\",\"value\":\"${TENSOR_PARALLEL_SIZE}\"}
+  ]" >/dev/null
 fi
 
 # Patch in GPU resources, cache volume, and /dev/shm
