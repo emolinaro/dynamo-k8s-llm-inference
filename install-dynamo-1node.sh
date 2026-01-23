@@ -34,6 +34,10 @@ NAMESPACE_RESTRICTED_OPERATOR="${NAMESPACE_RESTRICTED_OPERATOR:-false}"
 ENABLE_GROVE="${ENABLE_GROVE:-false}"
 ENABLE_KAI_SCHEDULER="${ENABLE_KAI_SCHEDULER:-false}"
 
+# Prometheus endpoint URL (where Dynamo sends metrics)
+# Default: kube-prometheus-stack Prometheus service in monitoring namespace
+PROMETHEUS_ENDPOINT="${PROMETHEUS_ENDPOINT:-http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090}"
+
 # Local-path provisioner manifest URL (lightweight dynamic PV provisioning)
 LOCAL_PATH_MANIFEST_URL="${LOCAL_PATH_MANIFEST_URL:-https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml}"
 
@@ -107,6 +111,7 @@ echo "  RELEASE_VERSION=${RELEASE_VERSION}"
 echo "  NAMESPACE_RESTRICTED_OPERATOR=${NAMESPACE_RESTRICTED_OPERATOR}"
 echo "  ENABLE_GROVE=${ENABLE_GROVE}"
 echo "  ENABLE_KAI_SCHEDULER=${ENABLE_KAI_SCHEDULER}"
+echo "  PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}"
 echo "  GPU_OPERATOR_NS=${GPU_OPERATOR_NS}"
 echo "  GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}"
 
@@ -195,6 +200,12 @@ if [[ "${ENABLE_KAI_SCHEDULER}" == "true" ]]; then
   HELM_FLAGS+=(--set "kai-scheduler.enabled=true")
 fi
 
+# Configure Prometheus endpoint (where Dynamo sends metrics)
+if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
+  HELM_FLAGS+=(--set "prometheusEndpoint=${PROMETHEUS_ENDPOINT}")
+  echo "Prometheus endpoint configured: ${PROMETHEUS_ENDPOINT}"
+fi
+
 helm upgrade --install dynamo-platform "dynamo-platform-${RELEASE_VERSION}.tgz" "${HELM_FLAGS[@]}"
 
 popd >/dev/null
@@ -227,6 +238,15 @@ kubectl get pods -n "${NAMESPACE}" -o wide
 kubectl get pvc -n "${NAMESPACE}" || true
 
 log "Dynamo platform installed for 1-node cluster ✅"
+
+if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
+  echo ""
+  echo "Prometheus endpoint configured:"
+  echo "  - Dynamo will send metrics to: ${PROMETHEUS_ENDPOINT}"
+  echo "  - Ensure Prometheus is installed and accessible at this endpoint"
+  echo "  - If using kube-prometheus-stack, the default endpoint is:"
+  echo "    http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090"
+fi
 
 # -----------------------------
 # 5) Install NVIDIA GPU Operator (so GPU workloads can schedule)

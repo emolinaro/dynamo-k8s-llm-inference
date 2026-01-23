@@ -23,6 +23,9 @@ ENABLE_HUBBLE="${ENABLE_HUBBLE:-true}"
 HELM_VERSION="${HELM_VERSION:-v4.1.0}"   # e.g. v4.1.0, v4.0.5, v3.20.0, ...
 INSTALL_HELM="${INSTALL_HELM:-true}"     # true/false
 
+# kube-prometheus-stack install (requires Helm)
+INSTALL_PROMETHEUS_STACK="${INSTALL_PROMETHEUS_STACK:-true}"  # true/false
+
 #------------------------------#
 # Helpers                      #
 #------------------------------#
@@ -215,7 +218,49 @@ sudo -u "${PRIMARY_USER}" -H kubectl taint nodes --all node-role.kubernetes.io/m
 log "Step 14: Wait for Cilium to become ready"
 sudo -u "${PRIMARY_USER}" -H cilium status --wait
 
-log "Step 15: Show final cluster status"
+if [[ "${INSTALL_PROMETHEUS_STACK}" == "true" ]]; then
+  if [[ "${INSTALL_HELM}" != "true" ]]; then
+    echo "WARN: INSTALL_PROMETHEUS_STACK is true but INSTALL_HELM is false. Skipping kube-prometheus-stack installation." >&2
+  elif ! command -v helm &>/dev/null; then
+    echo "WARN: Helm is not installed. Skipping kube-prometheus-stack installation." >&2
+  else
+    log "Step 15: Install kube-prometheus-stack (includes Prometheus Operator, Prometheus, Grafana)"
+    echo "The kube-prometheus-stack Helm chart includes:"
+    echo "  - Prometheus Operator: Manages Prometheus instances"
+    echo "  - Prometheus: Metrics collection and storage"
+    echo "  - Grafana: Visualization and dashboards (automatically included)"
+    echo "  - Alertmanager: Alert handling"
+    echo "  - Node Exporter: Node metrics"
+    echo "  - Kube State Metrics: Kubernetes object metrics"
+    echo ""
+    echo "Custom resources provided:"
+    echo "  - PodMonitor: Automatically discovers and scrapes metrics from pods based on label selectors"
+    echo "  - ServiceMonitor: Similar to PodMonitor but works with Services"
+    echo "  - PrometheusRule: Defines alerting and recording rules"
+    
+    sudo -u "${PRIMARY_USER}" -H helm repo add prometheus-community https://prometheus-community.github.io/helm-charts
+    sudo -u "${PRIMARY_USER}" -H helm repo update
+    
+    # Values allow PodMonitors to be picked up that are outside of the kube-prometheus-stack helm release
+    sudo -u "${PRIMARY_USER}" -H helm install prometheus -n monitoring --create-namespace \
+      prometheus-community/kube-prometheus-stack \
+      --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
+      --set prometheus.prometheusSpec.podMonitorNamespaceSelector="{}" \
+      --set prometheus.prometheusSpec.probeNamespaceSelector="{}" \
+      --wait --timeout 10m || {
+        echo "WARN: kube-prometheus-stack installation may have failed or is still in progress." >&2
+        echo "Check status with: kubectl get pods -n monitoring" >&2
+      }
+    
+    echo ""
+    echo "kube-prometheus-stack installed in 'monitoring' namespace"
+    echo "Grafana is included in the stack and available at:"
+    echo "  kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
+    echo "Default Grafana credentials: admin / prom-operator"
+  fi
+fi
+
+log "Step 16: Show final cluster status"
 sudo -u "${PRIMARY_USER}" -H kubectl get nodes -o wide
 sudo -u "${PRIMARY_USER}" -H kubectl get pods -A
 
@@ -227,4 +272,9 @@ if [[ "${ENABLE_HUBBLE}" == "true" ]]; then
 fi
 if [[ "${INSTALL_HELM}" == "true" ]]; then
   echo "Helm installed: $(helm version 2>/dev/null | head -1 || true)"
+fi
+if [[ "${INSTALL_PROMETHEUS_STACK}" == "true" && "${INSTALL_HELM}" == "true" ]] && command -v helm &>/dev/null; then
+  echo "kube-prometheus-stack installed in 'monitoring' namespace"
+  echo "  - Prometheus Operator, Prometheus, Grafana, and monitoring components"
+  echo "  - Access Grafana: kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
 fi
