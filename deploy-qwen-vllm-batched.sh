@@ -64,6 +64,10 @@ CACHE_SIZE="${CACHE_SIZE:-80Gi}"
 # Shared memory for PyTorch/vLLM stability
 DSHM_SIZE="${DSHM_SIZE:-8Gi}"
 
+# Hugging Face token (for private models or gated models)
+# Set via: HF_TOKEN="hf_..." ./deploy-qwen-vllm-batched.sh
+HF_TOKEN="${HF_TOKEN:-}"
+
 # -----------------------------
 # Pre-flight
 # -----------------------------
@@ -71,6 +75,16 @@ command -v kubectl >/dev/null 2>&1 || { echo "ERROR: kubectl not found"; exit 1;
 
 echo -e "\n==> Verifying GPUs are allocatable..."
 kubectl get nodes -o custom-columns=NAME:.metadata.name,GPUS:.status.allocatable.nvidia\\.com/gpu
+
+# -----------------------------
+# Create Secret for HF_TOKEN if provided
+# -----------------------------
+if [[ -n "${HF_TOKEN}" ]]; then
+  echo -e "\n==> Creating Secret for Hugging Face token..."
+  kubectl -n "${NS}" create secret generic "${NAME}-hf-token" \
+    --from-literal=token="${HF_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f - >/dev/null
+fi
 
 # -----------------------------
 # Apply manifest (single, clean spec)
@@ -158,6 +172,22 @@ kubectl -n "${NS}" patch deploy "${NAME}" --type='json' -p="[
     {\"name\":\"dshm\",\"mountPath\":\"/dev/shm\"}
   ]}
 ]" >/dev/null
+
+# Add HF_TOKEN environment variable from Secret if provided (for private/gated models)
+if [[ -n "${HF_TOKEN}" ]]; then
+  echo -e "\n==> Adding HF_TOKEN from Secret for Hugging Face authentication..."
+  kubectl -n "${NS}" patch deploy "${NAME}" --type='json' -p="[
+    {\"op\":\"add\",\"path\":\"/spec/template/spec/containers/0/env/-\",\"value\":{
+      \"name\":\"HF_TOKEN\",
+      \"valueFrom\":{
+        \"secretKeyRef\":{
+          \"name\":\"${NAME}-hf-token\",
+          \"key\":\"token\"
+        }
+      }
+    }}
+  ]" >/dev/null
+fi
 
 echo -e "\n==> Creating/Updating Service (NodePort) ..."
 

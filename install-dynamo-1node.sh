@@ -24,7 +24,7 @@ NAMESPACE="${NAMESPACE:-dynamo-system}"
 
 # Dynamo release version. The official guide expects you to set this.
 # Example: export RELEASE_VERSION=0.x.y (match NVIDIA Dynamo release you're using)
-RELEASE_VERSION="${RELEASE_VERSION:-0.8.0}"
+RELEASE_VERSION="${RELEASE_VERSION:-0.8.1}"
 
 # If you are on a shared/multi-tenant cluster and need namespace restriction, set:
 # export NAMESPACE_RESTRICTED_OPERATOR=true
