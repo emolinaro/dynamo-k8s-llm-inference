@@ -14,7 +14,7 @@ set -euo pipefail
 # User-tunable configuration   #
 #------------------------------#
 
-K8S_REPO_MINOR="${K8S_REPO_MINOR:-v1.30}"
+K8S_REPO_MINOR="${K8S_REPO_MINOR:-v1.35}"
 CLUSTER_NAME="${CLUSTER_NAME:-k8s-single}"
 POD_CIDR="${POD_CIDR:-10.0.0.0/16}"
 ENABLE_HUBBLE="${ENABLE_HUBBLE:-true}"
@@ -242,21 +242,61 @@ if [[ "${INSTALL_PROMETHEUS_STACK}" == "true" ]]; then
     sudo -u "${PRIMARY_USER}" -H helm repo update
     
     # Values allow PodMonitors to be picked up that are outside of the kube-prometheus-stack helm release
+    # Use a temporary values file to properly set empty namespace selectors (YAML objects, not strings)
+    # Create temp file in primary user's home directory so they can read it
+    PROMETHEUS_VALUES_FILE="${PRIMARY_HOME}/.prometheus-values-$$.yaml"
+    sudo -u "${PRIMARY_USER}" -H bash <<EOF
+cat > "${PROMETHEUS_VALUES_FILE}" <<'INNER_EOF'
+prometheus:
+  prometheusSpec:
+    podMonitorSelectorNilUsesHelmValues: false
+    podMonitorNamespaceSelector: {}
+    probeNamespaceSelector: {}
+INNER_EOF
+EOF
+    
     sudo -u "${PRIMARY_USER}" -H helm install prometheus -n monitoring --create-namespace \
       prometheus-community/kube-prometheus-stack \
-      --set prometheus.prometheusSpec.podMonitorSelectorNilUsesHelmValues=false \
-      --set prometheus.prometheusSpec.podMonitorNamespaceSelector="{}" \
-      --set prometheus.prometheusSpec.probeNamespaceSelector="{}" \
+      --values "${PROMETHEUS_VALUES_FILE}" \
       --wait --timeout 10m || {
         echo "WARN: kube-prometheus-stack installation may have failed or is still in progress." >&2
         echo "Check status with: kubectl get pods -n monitoring" >&2
       }
     
+    sudo -u "${PRIMARY_USER}" -H rm -f "${PROMETHEUS_VALUES_FILE}"
+    
     echo ""
     echo "kube-prometheus-stack installed in 'monitoring' namespace"
     echo "Grafana is included in the stack and available at:"
     echo "  kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
-    echo "Default Grafana credentials: admin / prom-operator"
+    
+    # Wait for Grafana secret to be available, then fetch credentials
+    log "Waiting for Grafana secret to be available..."
+    for i in {1..60}; do
+      if sudo -u "${PRIMARY_USER}" -H kubectl get secret -n monitoring prometheus-grafana >/dev/null 2>&1; then
+        break
+      fi
+      if [[ $i -eq 60 ]]; then
+        echo "WARN: Grafana secret not found after waiting. Using default credentials." >&2
+        echo "Default Grafana credentials: admin / prom-operator"
+        break
+      fi
+      sleep 2
+    done
+    
+    # Fetch Grafana credentials if secret is available
+    if sudo -u "${PRIMARY_USER}" -H kubectl get secret -n monitoring prometheus-grafana >/dev/null 2>&1; then
+      echo "Fetching Grafana admin credentials..."
+      export GRAFANA_USER=$(sudo -u "${PRIMARY_USER}" -H kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-user}" 2>/dev/null | base64 -d 2>/dev/null || echo "admin")
+      export GRAFANA_PASSWORD=$(sudo -u "${PRIMARY_USER}" -H kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" 2>/dev/null | base64 -d 2>/dev/null || echo "prom-operator")
+      echo "Grafana credentials exported:"
+      echo "  GRAFANA_USER=${GRAFANA_USER}"
+      echo "  GRAFANA_PASSWORD=${GRAFANA_PASSWORD}"
+    else
+      echo "Default Grafana credentials: admin / prom-operator"
+      export GRAFANA_USER="admin"
+      export GRAFANA_PASSWORD="prom-operator"
+    fi
   fi
 fi
 
@@ -276,10 +316,5 @@ fi
 if [[ "${INSTALL_PROMETHEUS_STACK}" == "true" && "${INSTALL_HELM}" == "true" ]] && command -v helm &>/dev/null; then
   echo "kube-prometheus-stack installed in 'monitoring' namespace"
   echo "  - Prometheus Operator, Prometheus, Grafana, and monitoring components"
-  echo "Fetching Grafana admin credentials..."
-  export GRAFANA_USER=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-user}" | base64 --decode)
-  export GRAFANA_PASSWORD=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode)
-  echo "Grafana user: \$GRAFANA_USER"
-  echo "Grafana password: \$GRAFANA_PASSWORD"
   echo "  - Access Grafana: kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
 fi
