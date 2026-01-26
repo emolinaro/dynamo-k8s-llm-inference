@@ -276,5 +276,10 @@ fi
 if [[ "${INSTALL_PROMETHEUS_STACK}" == "true" && "${INSTALL_HELM}" == "true" ]] && command -v helm &>/dev/null; then
   echo "kube-prometheus-stack installed in 'monitoring' namespace"
   echo "  - Prometheus Operator, Prometheus, Grafana, and monitoring components"
+  echo "Fetching Grafana admin credentials..."
+  export GRAFANA_USER=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-user}" | base64 --decode)
+  export GRAFANA_PASSWORD=$(kubectl get secret -n monitoring prometheus-grafana -o jsonpath="{.data.admin-password}" | base64 --decode)
+  echo "Grafana user: \$GRAFANA_USER"
+  echo "Grafana password: \$GRAFANA_PASSWORD"
   echo "  - Access Grafana: kubectl port-forward -n monitoring svc/prometheus-grafana 3000:80"
 fi

@@ -1,8 +1,23 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
-API_URL="http://127.0.0.1:8000/v1/chat/completions"
+API_URL="${API_URL:-http://127.0.0.1:8000/v1/chat/completions}"
 MODEL="Qwen/Qwen3-0.6B"
+
+# Usage: ./chat.sh [API_URL]
+#
+#  - This script starts an interactive chat with a vLLM/OpenAI-compatible chat/completions endpoint.
+#  - By default, it connects to http://127.0.0.1:8000/v1/chat/completions.
+#  - You can override the API endpoint in two ways:
+#      1) Pass the API URL as the first argument:
+#           ./chat.sh http://nodeip:port/v1/chat/completions
+#      2) Or set the API_URL environment variable:
+#           API_URL="http://otherhost:port/v1/chat/completions" ./chat.sh
+#
+#  - Press Ctrl+C to exit at any time.
+
+if [[ $# -ge 1 ]]; then
+  API_URL="$1"
+fi
 
 # Conversation history for normal chatting
 MESSAGES='[]'
