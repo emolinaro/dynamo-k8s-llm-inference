@@ -1,22 +1,30 @@
 #!/usr/bin/env bash
 set -euo pipefail
 API_URL="${API_URL:-http://127.0.0.1:8000/v1/chat/completions}"
-MODEL="Qwen/Qwen3-0.6B"
+MODEL="${MODEL:-Qwen/Qwen3-0.6B}"
 
-# Usage: ./chat.sh [API_URL]
+# Usage: ./chat.sh [API_URL] [MODEL]
 #
 #  - This script starts an interactive chat with a vLLM/OpenAI-compatible chat/completions endpoint.
-#  - By default, it connects to http://127.0.0.1:8000/v1/chat/completions.
-#  - You can override the API endpoint in two ways:
-#      1) Pass the API URL as the first argument:
+#  - By default, it connects to http://127.0.0.1:8000/v1/chat/completions with model Qwen/Qwen3-0.6B.
+#  - You can override the API endpoint and model in three ways:
+#      1) Pass both as arguments:
+#           ./chat.sh http://nodeip:port/v1/chat/completions Qwen/Qwen3-0.6B
+#      2) Pass only API URL as first argument:
 #           ./chat.sh http://nodeip:port/v1/chat/completions
-#      2) Or set the API_URL environment variable:
-#           API_URL="http://otherhost:port/v1/chat/completions" ./chat.sh
+#      3) Or set environment variables:
+#           API_URL="http://otherhost:port/v1/chat/completions" MODEL="other-model" ./chat.sh
 #
 #  - Press Ctrl+C to exit at any time.
 
+# Parse command line arguments (override environment variables if provided)
 if [[ $# -ge 1 ]]; then
   API_URL="$1"
+  shift
+  if [[ $# -ge 1 ]]; then
+    MODEL="$1"
+    shift
+  fi
 fi
 
 # Conversation history for normal chatting
