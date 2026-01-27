@@ -19,6 +19,23 @@ This repository provides end-to-end automation for:
 
 ## Quick Start
 
+You can use the Makefile shortcuts or run the scripts directly.
+
+### Option A: Makefile (recommended)
+
+```bash
+make install
+```
+
+Override any script env vars inline:
+
+```bash
+RELEASE_VERSION=0.8.1 make dynamo
+K8S_REPO_MINOR=v1.35 POD_CIDR=10.1.0.0/16 make k8s
+```
+
+### Option B: Scripts
+
 ### 1. Set Up Kubernetes Cluster
 
 First, initialize a single-node Kubernetes cluster:
@@ -43,7 +60,7 @@ export KUBECONFIG=$HOME/.kube/config
 Install NVIDIA Dynamo Platform and GPU Operator:
 
 ```bash
-export RELEASE_VERSION=0.8.0  # Adjust to match your Dynamo version
+export RELEASE_VERSION=0.8.1  # Adjust to match your Dynamo version
 ./install-dynamo-1node.sh
 ```
 
@@ -108,17 +125,20 @@ This provides an interactive interface that:
 Sets up a single-node Kubernetes cluster on Ubuntu 24.04.
 
 **Configuration:**
-- `K8S_REPO_MINOR`: Kubernetes version (default: `v1.30`)
+- `K8S_REPO_MINOR`: Kubernetes version (default: `v1.35`)
+- `CLUSTER_NAME`: Cluster name (default: `k8s-single`)
 - `POD_CIDR`: Pod network CIDR (default: `10.0.0.0/16`)
 - `ENABLE_HUBBLE`: Enable Hubble observability (default: `true`)
 - `HELM_VERSION`: Helm version to install (default: `v4.1.0`)
+- `INSTALL_HELM`: Install Helm (default: `true`)
+- `INSTALL_PROMETHEUS_STACK`: Install kube-prometheus-stack (default: `true`)
 
 ### `install-dynamo-1node.sh`
 Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 
 **Configuration:**
 - `NAMESPACE`: Dynamo namespace (default: `dynamo-system`)
-- `RELEASE_VERSION`: Dynamo release version (default: `0.8.0`)
+- `RELEASE_VERSION`: Dynamo release version (default: `0.8.1`)
 - `NAMESPACE_RESTRICTED_OPERATOR`: Enable namespace restriction (default: `false`)
 - `GPU_OPERATOR_NS`: GPU Operator namespace (default: `gpu-operator`)
 
