@@ -21,6 +21,7 @@ set -euo pipefail
 #   --mode MODE           Deployment mode: agg or disagg [default: agg]
 #   --namespace NS        Kubernetes namespace [default: dynamo-system]
 #   --runtime-tag TAG     Runtime tag to use [default: 0.8.1]
+#   --runtime-image IMG   Full runtime image override (e.g. nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.8.1)
 #   --repo-url URL        Dynamo repo URL [default: https://github.com/ai-dynamo/dynamo.git]
 #   --repo-dir DIR        Local directory for Dynamo repo [default: dynamo]
 #   --hf-token TOKEN      HuggingFace token for private/gated models [optional]
@@ -37,6 +38,7 @@ MODE="${MODE:-agg}"
 BACKEND="${BACKEND:-}"
 MODEL="${MODEL:-}"
 RUNTIME_TAG="${RUNTIME_TAG:-0.8.1}"
+RUNTIME_IMAGE="${RUNTIME_IMAGE:-}"
 DYNAMO_REPO_URL="${DYNAMO_REPO_URL:-https://github.com/ai-dynamo/dynamo.git}"
 DYNAMO_REPO_DIR="${DYNAMO_REPO_DIR:-dynamo}"
 HF_TOKEN="${HF_TOKEN:-}"
@@ -70,6 +72,7 @@ Optional:
   --mode MODE           Deployment mode: agg or disagg [default: agg]
   --namespace NS        Kubernetes namespace [default: dynamo-system]
   --runtime-tag TAG     Runtime tag to use [default: 0.8.1]
+  --runtime-image IMG   Full runtime image override (e.g. nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.8.1)
   --repo-url URL        Dynamo repo URL [default: https://github.com/ai-dynamo/dynamo.git]
   --repo-dir DIR        Local directory for Dynamo repo [default: dynamo]
   --hf-token TOKEN      HuggingFace token for private/gated models
@@ -149,6 +152,10 @@ while [[ $# -gt 0 ]]; do
       ;;
     --runtime-tag)
       RUNTIME_TAG="$2"
+      shift 2
+      ;;
+    --runtime-image)
+      RUNTIME_IMAGE="$2"
       shift 2
       ;;
     --repo-url)
@@ -270,9 +277,31 @@ trap "rm -f ${PATCHED_MANIFEST}" EXIT
 # Copy manifest to temp file
 cp "${MANIFEST}" "${PATCHED_MANIFEST}"
 
-# Patch runtime tag (common pattern: :my-tag or :latest)
-sed -i.bak "s/:my-tag/:${RUNTIME_TAG}/g" "${PATCHED_MANIFEST}"
-sed -i.bak "s|image:.*:latest|image: &|g" "${PATCHED_MANIFEST}" || true
+# Patch runtime image/tag
+if [[ -n "${RUNTIME_IMAGE}" ]]; then
+  log "Overriding runtime image: ${RUNTIME_IMAGE}"
+  RUNTIME_IMAGE_SED="$(printf '%s' "${RUNTIME_IMAGE}" | sed -e 's/[\\/&]/\\&/g')"
+  sed -i.bak -E "s|(^[[:space:]]*image:[[:space:]]*)(\"?)[^\"#]*(vllm-runtime|sglang-runtime|tensorrtllm-runtime)[^\"#]*(\"?)|\\1\\2${RUNTIME_IMAGE_SED}\\4|g" \
+    "${PATCHED_MANIFEST}" 2>/dev/null || true
+else
+  # Replace my-registry placeholders with official registry and tag (quoted or unquoted)
+  sed -i.bak -E "s|(^[[:space:]]*image:[[:space:]]*)(\"?)my-registry/(vllm-runtime|sglang-runtime|tensorrtllm-runtime):[^\"[:space:]#]+(\"?)|\\1\\2nvcr.io/nvidia/ai-dynamo/\\3:${RUNTIME_TAG}\\4|g" \
+    "${PATCHED_MANIFEST}" 2>/dev/null || true
+  # Replace official runtime images with desired tag
+  sed -i.bak -E "s|(^[[:space:]]*image:[[:space:]]*nvcr.io/nvidia/ai-dynamo/(vllm-runtime|sglang-runtime|tensorrtllm-runtime)):[^[:space:]#]+|\\1:${RUNTIME_TAG}|g" \
+    "${PATCHED_MANIFEST}" 2>/dev/null || true
+  # Fallback: replace :my-tag anywhere
+  sed -i.bak "s/:my-tag/:${RUNTIME_TAG}/g" "${PATCHED_MANIFEST}" 2>/dev/null || true
+fi
+
+# Fallback: if any my-registry images remain, replace registry and tag
+if grep -q "my-registry/" "${PATCHED_MANIFEST}"; then
+  warn "Runtime image still references my-registry; applying fallback registry replacement"
+  sed -i.bak -E "s|(^[[:space:]]*image:[[:space:]]*)(\"?)my-registry/([^\"[:space:]#]+)(\"?)|\\1\\2nvcr.io/nvidia/ai-dynamo/\\3\\4|g" \
+    "${PATCHED_MANIFEST}" 2>/dev/null || true
+  sed -i.bak -E "s|(^[[:space:]]*image:[[:space:]]*nvcr.io/nvidia/ai-dynamo/[^\"[:space:]#]+):my-tag|\\1:${RUNTIME_TAG}|g" \
+    "${PATCHED_MANIFEST}" 2>/dev/null || true
+fi
 rm -f "${PATCHED_MANIFEST}.bak"
 
 # Patch HF_TOKEN in manifest if provided
@@ -594,8 +623,57 @@ fi
 # Convert Services to NodePort
 # -----------------------------
 log "Converting services from this deployment to NodePort for external access"
+
+# If no services were found initially, try to find them again (they might have been created by CRD controller)
+# This is especially important for DynamoGraphDeployment which creates services asynchronously
+if [[ -z "${CURRENT_SERVICE_NAMES}" ]] && [[ -n "${MANIFEST_RESOURCE_NAMES}" ]]; then
+  log "Services not found initially, waiting for DynamoGraphDeployment to create them..."
+  start_ts="$(date +%s)"
+  while true; do
+    CURRENT_SERVICE_NAMES="$(kubectl -n "${NAMESPACE}" get svc --no-headers 2>/dev/null | \
+      awk -v names="${MANIFEST_RESOURCE_NAMES}" '
+        BEGIN{
+          split(names, a, " ");
+          for (i in a) if (a[i] != "") pats[a[i]] = 1;
+        }
+        {
+          svc=$1
+          if (svc ~ /^dynamo-platform-/ || svc ~ /-operator-/ || svc=="etcd" || svc=="nats") next
+          for (p in pats) {
+            if (index(svc, p) == 1) { print svc; next }
+          }
+        }' | sort -u)"
+    if [[ -n "${CURRENT_SERVICE_NAMES}" ]]; then
+      log "Found services: ${CURRENT_SERVICE_NAMES}"
+      break
+    fi
+    now_ts="$(date +%s)"
+    if (( now_ts - start_ts > SERVICES_TIMEOUT )); then
+      warn "Timed out waiting for services. Trying one more time with broader search..."
+      # Last attempt: find any services that match the backend/mode pattern
+      BACKEND_MODE_PATTERN="${BACKEND}-${MODE}"
+      CURRENT_SERVICE_NAMES="$(kubectl -n "${NAMESPACE}" get svc --no-headers 2>/dev/null | \
+        awk -v pattern="${BACKEND_MODE_PATTERN}" '
+          {
+            svc=$1
+            if (svc ~ /^dynamo-platform-/ || svc ~ /-operator-/ || svc=="etcd" || svc=="nats") next
+            if (index(svc, pattern) > 0) { print svc }
+          }' | sort -u)"
+      if [[ -n "${CURRENT_SERVICE_NAMES}" ]]; then
+        log "Found services using pattern matching: ${CURRENT_SERVICE_NAMES}"
+      else
+        warn "No services found. They may be created later by the DynamoGraphDeployment controller."
+      fi
+      break
+    fi
+    sleep 3
+  done
+fi
+
 if [[ -z "${CURRENT_SERVICE_NAMES}" ]]; then
   warn "No services found for current deployment; skipping NodePort conversion"
+  warn "Services may be created later. You can manually convert them with:"
+  warn "  kubectl patch svc <service-name> -n ${NAMESPACE} --type='json' -p='[{\"op\":\"replace\",\"path\":\"/spec/type\",\"value\":\"NodePort\"}]'"
 else
   for svc_name in ${CURRENT_SERVICE_NAMES}; do
     svc="service/${svc_name}"
