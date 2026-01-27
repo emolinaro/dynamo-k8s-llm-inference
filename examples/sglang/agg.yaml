@@ -1,0 +1,43 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Modifications: Copyright (c) 2026 Emiliano Molinaro/SDU eScience Center
+# - Modified to integrate with this repository
+
+apiVersion: nvidia.com/v1alpha1
+kind: DynamoGraphDeployment
+metadata:
+  name: sglang-agg
+spec:
+  services:
+    Frontend:
+      componentType: frontend
+      replicas: 1
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.8.1
+    decode:
+      envFromSecret: hf-token-secret
+      componentType: worker
+      replicas: 1
+      resources:
+        limits:
+          gpu: "1"
+      extraPodSpec:
+        mainContainer:
+          image: nvcr.io/nvidia/ai-dynamo/sglang-runtime:0.8.1
+          workingDir: /workspace/examples/backends/sglang
+          command:
+          - python3
+          - -m
+          - dynamo.sglang
+          args:
+            - --model-path
+            - meta-llama/Llama-3.2-1B-Instruct
+            - --served-model-name
+            - meta-llama/Llama-3.2-1B-Instruct
+            - --page-size
+            - "16"
+            - --tp
+            - "1"
+            - --trust-remote-code
+            - --skip-tokenizer-init

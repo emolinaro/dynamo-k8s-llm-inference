@@ -7,7 +7,7 @@ A collection of scripts for deploying and testing Large Language Model (LLM) inf
 This repository provides end-to-end automation for:
 - Setting up a single-node Kubernetes cluster with Cilium CNI
 - Installing NVIDIA Dynamo Platform for GPU orchestration
-- Deploying vLLM-based inference servers with batching support
+- Deploying inference servers from example Dynamo manifests (vLLM, SGLang, TRT-LLM)
 - Testing and interacting with deployed models
 
 ## Prerequisites
@@ -70,40 +70,35 @@ This script will:
 - Install NVIDIA GPU Operator to enable GPU scheduling
 - Verify that GPUs are allocatable in Kubernetes
 
-### 3. Deploy vLLM Inference Server
+### 3. Deploy from an Example Manifest
 
-Deploy a batched vLLM inference server:
+Apply a Dynamo manifest as-is:
 
 ```bash
-./deploy-qwen-vllm-batched.sh
+./deploy-incluster.sh --manifest examples/vllm/agg.yaml --model meta-llama/Llama-3.2-1B-Instruct
 ```
 
 This will:
-- Deploy vLLM with OpenAI-compatible API
-- Configure batching parameters for optimal throughput
+- Apply the manifest to Kubernetes
+- Create/update the HuggingFace token secret (if provided)
 - Expose the service via NodePort
 - Print the access URL for the inference server
 
-**Configuration options** (via environment variables):
-- `MODEL`: Model to deploy (default: `Qwen/Qwen3-0.6B`)
-- `GPUS_PER_POD`: Number of GPUs per pod (default: `1`)
-- `MAX_NUM_SEQS`: Maximum concurrent sequences (default: `128`)
-- `MAX_NUM_BATCHED_TOKENS`: Maximum batched tokens (default: `8192`)
+**Configuration options** (via flags or env vars):
+- `MANIFEST_FILE`: Manifest file to apply (required)
+- `NAMESPACE`: Kubernetes namespace (default: `dynamo-system`)
+- `MODEL`: Model name used for the quick test snippet (optional)
+- `HF_TOKEN`: HuggingFace token for private/gated models (optional)
 - `NODEPORT`: Fixed NodePort (optional, 30000-32767)
 
 ### 4. Test the Deployment
 
-Run the reproducible GPU smoke test:
+Quick API check (use the NodePort printed by the deploy script):
 
 ```bash
-./dynamo-reproducible-test.sh
+export DYNAMO_BASE_URL=http://<NODE_IP>:<NODEPORT>
+curl -sS "$DYNAMO_BASE_URL/v1/models" | jq .
 ```
-
-This validates:
-- GPU allocatability in Kubernetes
-- vLLM deployment success
-- API endpoints (`/v1/models`, `/v1/chat/completions`)
-- Response structure and content
 
 ### 5. Chat with the Model
 
@@ -142,25 +137,15 @@ Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 - `NAMESPACE_RESTRICTED_OPERATOR`: Enable namespace restriction (default: `false`)
 - `GPU_OPERATOR_NS`: GPU Operator namespace (default: `gpu-operator`)
 
-### `deploy-qwen-vllm-batched.sh`
-Deploys a vLLM inference server with batching support.
+### `deploy-incluster.sh`
+Applies a user-provided Dynamo manifest file as-is (no YAML patching) and exposes services via NodePort.
 
 **Configuration:**
-- `NS`: Kubernetes namespace (default: `qwen-infer`)
-- `NAME`: Deployment name (default: `qwen-vllm`)
-- `MODEL`: HuggingFace model identifier (default: `Qwen/Qwen3-0.6B`)
-- `IMAGE`: vLLM container image (default: `vllm/vllm-openai:latest`)
-- `GPUS_PER_POD`: Number of GPUs (default: `1`)
-- `MAX_NUM_SEQS`: Max concurrent sequences (default: `128`)
-- `MAX_NUM_BATCHED_TOKENS`: Max batched tokens (default: `8192`)
-
-### `dynamo-reproducible-test.sh`
-Runs a reproducible GPU smoke test for Dynamo Platform.
-
-**Configuration:**
-- `NAMESPACE`: Dynamo namespace (default: `dynamo-system`)
-- `VLLM_RUNTIME_TAG`: vLLM runtime tag (default: `0.6.1`)
-- `CLEANUP_ON_EXIT`: Clean up resources on exit (default: `false`)
+- `MANIFEST_FILE`: Manifest file to apply (required)
+- `NAMESPACE`: Kubernetes namespace (default: `dynamo-system`)
+- `MODEL`: Model name used for the quick test snippet (optional)
+- `HF_TOKEN`: HuggingFace token for private/gated models (optional)
+- `NODEPORT`: Fixed NodePort (optional, 30000-32767)
 
 ### `chat.sh`
 Interactive chat interface for the deployed inference server.
@@ -168,6 +153,16 @@ Interactive chat interface for the deployed inference server.
 **Configuration:**
 - `API_URL`: API endpoint (default: `http://127.0.0.1:8000/v1/chat/completions`)
 - `MODEL`: Model identifier (default: `Qwen/Qwen3-0.6B`)
+
+## Example Manifests
+
+Sample DynamoGraphDeployment manifests are provided under `examples/`:
+
+- `examples/vllm/agg.yaml` and `examples/vllm/disagg.yaml`
+- `examples/sglang/agg.yaml` and `examples/sglang/disagg.yaml`
+- `examples/trtllm/agg.yaml` and `examples/trtllm/disagg.yaml`
+
+Edit these manifests to change the model, runtime image, resources, or replicas.
 
 ## Accessing the Inference Server
 
@@ -180,7 +175,7 @@ http://<NODE_IP>:<NODEPORT>
 You can also use port-forwarding:
 
 ```bash
-kubectl port-forward -n qwen-infer svc/qwen-vllm 8000:8000
+kubectl port-forward -n dynamo-system svc/<frontend-service> 8000:8000
 ```
 
 Then access it at `http://127.0.0.1:8000`.
@@ -231,45 +226,39 @@ kubectl get pvc -n dynamo-system
 ### Model Download Issues
 Check pod logs for model download progress:
 ```bash
-kubectl logs -n qwen-infer <pod-name> -f
+kubectl logs -n dynamo-system <pod-name> -f
 ```
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│              Kubernetes Single-Node Cluster              │
-│                                                          │
+│              Kubernetes Single-Node Cluster             │
+│                                                         │
 │  ┌──────────────────────────────────────────────────┐   │
 │  │         NVIDIA Dynamo Platform                   │   │
 │  │  - Operator Controller                           │   │
 │  │  - etcd (state)                                  │   │
 │  │  - NATS (messaging)                              │   │
 │  └──────────────────────────────────────────────────┘   │
-│                                                          │
+│                                                         │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │         GPU Operator                              │   │
-│  │  - Device Plugin                                  │   │
-│  │  - Container Toolkit                              │   │
+│  │         GPU Operator                             │   │
+│  │  - Device Plugin                                 │   │
+│  │  - Container Toolkit                             │   │
 │  └──────────────────────────────────────────────────┘   │
-│                                                          │
+│                                                         │
 │  ┌──────────────────────────────────────────────────┐   │
-│  │         vLLM Inference Server                     │   │
+│  │         LLM Inference Server                     │   │
+│  │  - Backends: vLLM, SGLang, TRT-LLM               │   │
 │  │  - OpenAI-compatible API                         │   │
-│  │  - Batching support                              │   │
 │  │  - GPU-accelerated inference                     │   │
 │  └──────────────────────────────────────────────────┘   │
 └─────────────────────────────────────────────────────────┘
 ```
 
-## License
+## Notices and License
 
-MIT License - see [LICENSE](LICENSE) file for details.
+Third-party notices are in [NOTICE](NOTICE). Additional license texts are under `licenses/`.
 
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
-## Author
-
-Emiliano Molinaro
+This project is MIT licensed - see [LICENSE](LICENSE) for details.

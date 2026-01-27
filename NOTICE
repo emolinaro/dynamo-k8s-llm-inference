@@ -1,0 +1,32 @@
+NOTICE
+======
+
+This repository is primarily licensed under the MIT License (see LICENSE).
+
+Third-Party Notices
+-------------------
+
+This repository contains files derived from NVIDIA CORPORATION & AFFILIATES
+and licensed under the Apache License, Version 2.0.
+
+NVIDIA Corporation & Affiliates (Apache License 2.0)
+----------------------------------------------------
+Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+
+These NVIDIA-derived files are licensed under the Apache License, Version 2.0.
+A copy of the license is provided in this repository at:
+
+  licenses/Apache-2.0.txt
+
+Modifications
+-------------
+Some NVIDIA-derived files have been modified for use in this repository.
+Those modifications are Copyright (c) 2026 Emiliano Molinaro/SDU eScience Center and are distributed
+under the Apache License, Version 2.0 for those files.
+
+Provenance
+----------
+Upstream NVIDIA source:
+  - Upstream URL: https://github.com/ai-dynamo/dynamo
+  - Upstream commit/tag: v0.8.1
+  - Files modified in this repo: examples/backends/trtllm/deploy/agg.yaml, examples/backends/trtllm/deploy/disagg.yaml, examples/backends/vllm/deploy/agg.yaml, examples/backends/vllm/deploy/disagg.yaml, examples/backends/sglang/deploy/agg.yaml, examples/backends/sglang/deploy/disagg.yaml
