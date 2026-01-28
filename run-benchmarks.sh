@@ -50,8 +50,8 @@ if [[ ! -d dynamo ]]; then
   exit 1
 fi
 
-pushd dynamo >/dev/null
 mkdir -p "${OUTPUT_DIR}"
+pushd dynamo >/dev/null
 
 run_benchmark() {
   local name="$1"
