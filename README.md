@@ -27,6 +27,18 @@ You can use the Makefile shortcuts or run the scripts directly.
 make install
 ```
 
+Setup the benchmark Python environment:
+
+```bash
+make benchmark-env
+```
+
+Run a benchmark:
+
+```bash
+./run-benchmarks.sh -u http://<NODE_IP>:<NODEPORT> -m meta-llama/Llama-3.2-1B-Instruct -o ./benchmarks/results -b deployment-vllm
+```
+
 Override any script env vars inline:
 
 ```bash
@@ -154,6 +166,17 @@ Interactive chat interface for the deployed inference server.
 - `API_URL`: API endpoint (default: `http://127.0.0.1:8000/v1/chat/completions`)
 - `MODEL`: Model identifier (default: `Qwen/Qwen3-0.6B`)
 
+### `setup-benchmark-env.sh`
+Creates a Python virtual environment and installs benchmark dependencies.
+
+### `run-benchmarks.sh`
+Runs a single benchmark against a specified API endpoint.
+
+**Usage:**
+```bash
+./run-benchmarks.sh -u <api-url> -m <model> -o <output-dir> -b <benchmark-name> [-p]
+```
+
 ## Example Manifests
 
 Sample DynamoGraphDeployment manifests are provided under `examples/`:
@@ -179,6 +202,16 @@ kubectl port-forward -n dynamo-system svc/<frontend-service> 8000:8000
 ```
 
 Then access it at `http://127.0.0.1:8000`.
+
+If you already have a frontend pod name and need its NodePort (e.g., for chat completions), you can resolve the service as follows:
+
+```bash
+NS=dynamo-system
+SVC=<frontend-service>
+NODEPORT=$(kubectl get svc -n "$NS" "$SVC" -o json | jq -r \
+  '.spec.ports[] | select(.nodePort != null) | .nodePort' | head -n1)
+echo "$NODEPORT"
+```
 
 ### Example API Calls
 
