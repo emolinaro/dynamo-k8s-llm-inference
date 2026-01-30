@@ -16,7 +16,7 @@ python3 -m venv .venv
 source .venv/bin/activate
 
 # Install benchmark dependencies
-DYNAMO_REPO_URL="${DYNAMO_REPO_URL:-https://github.com/NVIDIA/ai-dynamo.git}"
+DYNAMO_REPO_URL="${DYNAMO_REPO_URL:-https://github.com/ai-dynamo/dynamo.git}"
 
 if [[ ! -d dynamo ]]; then
   if ! command -v git >/dev/null 2>&1; then
