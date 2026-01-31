@@ -36,6 +36,7 @@ fi
 pushd ../dynamo >/dev/null
 python3 -m pip install -r deploy/utils/requirements.txt
 python3 -m pip install -e benchmarks/
+python3 -m pip install ai-dynamo==${DYNAMO_REPO_REF#v}
 popd >/dev/null
 
 echo "Benchmark environment setup complete."
