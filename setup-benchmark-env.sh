@@ -17,24 +17,25 @@ source .venv/bin/activate
 
 # Install benchmark dependencies
 DYNAMO_REPO_URL="${DYNAMO_REPO_URL:-https://github.com/ai-dynamo/dynamo.git}"
+DYNAMO_REPO_REF="${DYNAMO_REPO_REF:-v0.8.1}"
 
-if [[ ! -d dynamo ]]; then
+if [[ ! -d ../dynamo ]]; then
   if ! command -v git >/dev/null 2>&1; then
     echo "git is required to clone the Dynamo repo. Please install git." >&2
     exit 1
   fi
-  echo "Cloning Dynamo repo into ./dynamo from ${DYNAMO_REPO_URL}"
-  git clone "${DYNAMO_REPO_URL}" dynamo
+  echo "Cloning Dynamo repo into ../dynamo from ${DYNAMO_REPO_URL}"
+  git clone "${DYNAMO_REPO_URL}" ../dynamo
+  pushd ../dynamo >/dev/null
   if [[ -n "${DYNAMO_REPO_REF:-}" ]]; then
-    pushd dynamo >/dev/null
     git checkout "${DYNAMO_REPO_REF}"
-    popd >/dev/null
   fi
+  popd >/dev/null
 fi
 
-pushd dynamo >/dev/null
-pip install -r deploy/utils/requirements.txt
-python3 -m pip install aiperf
+pushd ../dynamo >/dev/null
+python3 -m pip install -r deploy/utils/requirements.txt
+python3 -m pip install -e benchmarks/
 popd >/dev/null
 
 echo "Benchmark environment setup complete."
