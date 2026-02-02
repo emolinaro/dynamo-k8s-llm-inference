@@ -187,6 +187,12 @@ Sample DynamoGraphDeployment manifests are provided under `examples/`:
 
 Edit these manifests to change the model, runtime image, resources, or replicas.
 
+## DGDR Example
+
+An example DynamoGraphDeploymentRequest (DGDR) workflow for TRT-LLM is provided:
+
+- `examples/trtllm/dgdr-qwen/` (includes `disagg.yaml`, `dgdr.yaml`, and `run-dgdr.sh`)
+
 ## Accessing the Inference Server
 
 After deployment, the inference server is accessible via NodePort. The deployment script prints the access URL, typically:

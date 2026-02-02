@@ -1,0 +1,36 @@
+# SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
+# SPDX-License-Identifier: Apache-2.0
+# Modifications: Copyright (c) 2026 Emiliano Molinaro/SDU eScience Center
+# - Modified to integrate with this repository
+
+apiVersion: nvidia.com/v1alpha1
+kind: DynamoGraphDeploymentRequest
+metadata:
+  name: qwen-trtllm
+spec:
+  model: Qwen/Qwen3-0.6B
+  backend: trtllm
+
+  profilingConfig:
+    profilerImage: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.1"
+    configMapRef:
+      name: qwen-config
+      key: disagg.yaml  # Must match the key used in --from-file
+    config:
+      # SLA targets sized for a 1-node cluster with 2x A100 GPUs.
+      # Tightening these typically requires more PGUs than this cluster provides.
+      sla:
+        isl: 4000
+        osl: 500
+        ttft: 600
+        itl: 25
+      sweep:
+        useAiConfigurator: true
+        aicSystem: a100_sxm
+        aicHfId: Qwen/Qwen3-0.6B
+        aicBackendVersion: "1.0.0"
+
+  deploymentOverrides:
+    workersImage: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.1"
+
+  autoApply: true
