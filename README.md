@@ -87,7 +87,7 @@ This script will:
 Apply a Dynamo manifest as-is:
 
 ```bash
-./deploy-incluster.sh --manifest examples/vllm/agg.yaml --model meta-llama/Llama-3.2-1B-Instruct
+./deploy-incluster.sh --manifest examples/deploy/vllm/agg.yaml --model meta-llama/Llama-3.2-1B-Instruct
 ```
 
 This will:
@@ -181,9 +181,9 @@ Runs a single benchmark against a specified API endpoint.
 
 Sample DynamoGraphDeployment manifests are provided under `examples/`:
 
-- `examples/vllm/agg.yaml` and `examples/vllm/disagg.yaml`
-- `examples/sglang/agg.yaml` and `examples/sglang/disagg.yaml`
-- `examples/trtllm/agg.yaml` and `examples/trtllm/disagg.yaml`
+- `examples/deploy/vllm/agg.yaml` and `examples/deploy/vllm/disagg.yaml`
+- `examples/deploy/sglang/agg.yaml` and `examples/deploy/sglang/disagg.yaml`
+- `examples/deploy/trtllm/agg.yaml` and `examples/deploy/trtllm/disagg.yaml`
 
 Edit these manifests to change the model, runtime image, resources, or replicas.
 
@@ -191,7 +191,7 @@ Edit these manifests to change the model, runtime image, resources, or replicas.
 
 An example DynamoGraphDeploymentRequest (DGDR) workflow for TRT-LLM is provided:
 
-- `examples/trtllm/dgdr-qwen/` (includes `disagg.yaml`, `dgdr.yaml`, and `run-dgdr.sh`)
+- `examples/dgdr/trtllm/` (includes `disagg.yaml`, `dgdr.yaml`, and `run-dgdr.sh`)
 
 ## Accessing the Inference Server
 

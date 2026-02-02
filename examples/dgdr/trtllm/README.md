@@ -34,6 +34,39 @@ Override defaults via env vars:
 NAMESPACE=dynamo-system CONFIGMAP_NAME=qwen-config ./run-dgdr.sh
 ```
 
+## Frontend NodePort
+
+Expose the frontend service on a fixed NodePort:
+
+```bash
+export NAMESPACE=dynamo-system
+export FRONTEND_NODEPORT=30081
+export FRONTEND_SVC=$(kubectl -n $NAMESPACE get svc --no-headers | awk '/frontend/ {print $1; exit}')
+kubectl patch svc "$FRONTEND_SVC" -n "$NAMESPACE" --type='json' \
+  -p="[{\"op\":\"replace\",\"path\":\"/spec/type\",\"value\":\"NodePort\"},{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":${FRONTEND_NODEPORT}}]"
+```
+
+Access it:
+
+```bash
+export NODE_IP=$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}')
+echo "http://$NODE_IP:$FRONTEND_NODEPORT"
+```
+
+## Multi-user conversation test
+
+Run parallel conversations against the deployed endpoint:
+
+```bash
+NUM_CONVOS=20 CONCURRENCY=8 ./multi_convos_parallel.sh
+```
+
+Override endpoint/model if needed:
+
+```bash
+API_URL=http://<NODE_IP>:30081/v1/chat/completions MODEL=Qwen/Qwen3-0.6B ./multi_convos_parallel.sh
+```
+
 ## Grafana Dynamo dashboard
 
 Apply the dashboard ConfigMap:

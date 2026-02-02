@@ -29,4 +29,4 @@ Provenance
 Upstream NVIDIA source:
   - Upstream URL: https://github.com/ai-dynamo/dynamo
   - Upstream commit/tag: v0.8.1
-  - Files modified in this repo: examples/backends/trtllm/deploy/agg.yaml, examples/backends/trtllm/deploy/disagg.yaml, examples/backends/vllm/deploy/agg.yaml, examples/backends/vllm/deploy/disagg.yaml, examples/backends/sglang/deploy/agg.yaml, examples/backends/sglang/deploy/disagg.yaml, examples/trtllm/dgdr-qwen/disagg.yaml, examples/trtllm/dgdr-qwen/dgdr.yaml, examples/trtllm/dgdr-qwen/grafana-dynamo-dashboard-configmap.yaml
+  - Files modified in this repo: examples/deploy/trtllm/agg.yaml, examples/deploy/trtllm/disagg.yaml, examples/deploy/vllm/agg.yaml, examples/deploy/vllm/disagg.yaml, examples/deploy/sglang/agg.yaml, examples/deploy/sglang/disagg.yaml, examples/dgdr/trtllm/disagg.yaml, examples/dgdr/trtllm/dgdr.yaml, examples/dgdr/trtllm/grafana-dynamo-dashboard-configmap.yaml
