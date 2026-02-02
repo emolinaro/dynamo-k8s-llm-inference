@@ -1,6 +1,6 @@
 # Dynamo K8s LLM Inference
 
-A collection of scripts for deploying and testing Large Language Model (LLM) inference on Kubernetes using NVIDIA Dynamo Platform and vLLM.
+A collection of scripts for deploying and testing Large Language Model (LLM) inference on Kubernetes using NVIDIA Dynamo Platform.
 
 ## Overview
 
@@ -65,6 +65,34 @@ This script will:
 **Note:** After running this script, you may need to log out and back in, or run:
 ```bash
 export KUBECONFIG=$HOME/.kube/config
+```
+
+### 1b. Cilium Testing Basics (optional)
+
+Once the cluster is up, you can run a few quick checks to validate Cilium and Hubble:
+
+```bash
+# Quick health check
+cilium status --wait
+
+# Optional: verify Hubble is healthy (if ENABLE_HUBBLE=true)
+cilium hubble status
+
+# Optional: show Cilium/Hubble pods in kube-system
+kubectl -n kube-system get pods -o wide | grep -E 'cilium|hubble'
+```
+
+Run the built-in connectivity test (creates and cleans up its own test resources):
+
+```bash
+cilium connectivity test
+```
+
+If the Hubble UI service is missing, enable it and open the UI:
+
+```bash
+cilium hubble enable --ui
+cilium hubble ui -n kube-system
 ```
 
 ### 2. Install Dynamo Platform
@@ -216,7 +244,9 @@ kubectl describe pvc llm-models -n dynamo-system
 Deploy with the cached config:
 
 ```bash
-DISAGG_FILE=disagg_cache.yaml ./examples/dgdr/trtllm/run-dgdr.sh
+pushd examples/dgdr/trtllm
+DISAGG_FILE=disagg_cache.yaml ./run-dgdr.sh
+popd
 ```
 
 ## Accessing the Inference Server
@@ -277,8 +307,8 @@ kubectl -n gpu-operator logs -l app=nvidia-device-plugin-daemonset
 ### Pods Stuck in Pending
 Check resource availability:
 ```bash
-kubectl describe pod <pod-name> -n <namespace>
-kubectl get events -n <namespace> --sort-by=.lastTimestamp
+kubectl describe pod <pod-name> -n dynamo-system
+kubectl get events -n dynamo-system --sort-by=.lastTimestamp
 ```
 
 ### Storage Issues

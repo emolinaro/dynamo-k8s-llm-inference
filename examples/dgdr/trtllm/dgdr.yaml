@@ -18,7 +18,7 @@ spec:
       key: disagg.yaml  # Must match the key used in --from-file
     config:
       # SLA targets sized for a 1-node cluster with 2x A100 GPUs.
-      # Tightening these typically requires more PGUs than this cluster provides.
+      # Tightening these typically requires more GPUs than this cluster provides.
       sla:
         isl: 4000
         osl: 500

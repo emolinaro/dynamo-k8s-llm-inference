@@ -30,8 +30,8 @@ kubectl apply -n "$NAMESPACE" -f "$DGDR_FILE"
 
 log "Expose frontend via NodePort (fixed port)"
 export FRONTEND_NODEPORT="${FRONTEND_NODEPORT:-30081}"
-export FRONTEND_SVC
 FRONTEND_SVC="$(kubectl -n "$NAMESPACE" get svc --no-headers | awk '/frontend/ {print $1; exit}')"
+export FRONTEND_SVC
 if [[ -n "${FRONTEND_SVC}" ]]; then
   kubectl patch svc "$FRONTEND_SVC" -n "$NAMESPACE" --type='json' \
     -p="[{\"op\":\"replace\",\"path\":\"/spec/type\",\"value\":\"NodePort\"},{\"op\":\"replace\",\"path\":\"/spec/ports/0/nodePort\",\"value\":${FRONTEND_NODEPORT}}]"
@@ -39,8 +39,8 @@ else
   log "Frontend service not found yet. Re-run the NodePort snippet later."
 fi
 
-export NODE_IP
 NODE_IP="$(kubectl get nodes -o jsonpath='{.items[0].status.addresses[?(@.type=="InternalIP")].address}' 2>/dev/null || echo "localhost")"
+export NODE_IP
 log "Frontend URL: http://${NODE_IP}:${FRONTEND_NODEPORT}"
 
 log "Quick query snippet:"

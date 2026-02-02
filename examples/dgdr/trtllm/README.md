@@ -4,20 +4,20 @@ This example demonstrates a DynamoGraphDeploymentRequest (DGDR) that references 
 TRT-LLM disaggregated deployment template via a ConfigMap.
 
 ## Files
-- disagg.yaml: DynamoGraphDeployment template (prefill + decode)
-- dgdr.yaml: DynamoGraphDeploymentRequest that references the ConfigMap
-- run-dgdr.sh: helper to create/update the ConfigMap and apply the DGDR
+- `disagg.yaml`: DynamoGraphDeployment template (prefill + decode)
+- `dgdr.yaml`: DynamoGraphDeploymentRequest that references the ConfigMap
+- `run-dgdr.sh`: helper to create/update the ConfigMap and apply the DGDR
 
 ## Notes
 - SLA targets are sized for a 1-node cluster with 2x A100 GPUs. Tightening these
-  typically requires more PGUs than this cluster provides.
+  typically requires more GPUs than this cluster provides.
 
 ## Manual ConfigMap creation
 
 ```bash
 export NAMESPACE=dynamo-system
 kubectl create configmap qwen-config \
-  --from-file=disagg.yaml=path/to/disagg.yaml \
+  --from-file=disagg.yaml=/path/to/disagg.yaml \
   --namespace $NAMESPACE \
   --dry-run=client -o yaml | kubectl apply -f -
 ```
