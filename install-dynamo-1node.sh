@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-###############################################################################
+##################################################################################
 # Install NVIDIA Dynamo Platform on a 1-node Kubernetes cluster
 #
 # What this script does (in order):
@@ -13,9 +13,8 @@ set -euo pipefail
 #  5) Waits and verifies pods + PVCs become ready/bound.
 #  5) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
 #     GPU workloads (like vLLM decode workers) can schedule successfully.
-#  6) Checks if nvidia-smi is available on the host; if not, deploys a helper pod
-#     and adds a persistent alias to access nvidia-smi via kubectl logs.
-###############################################################################
+#  6) Checks if nvidia-smi is available on the host; if not, deploys a helper pod.
+##################################################################################
 
 # -----------------------------
 # User-configurable variables
@@ -327,71 +326,50 @@ log "GPU Operator is installed and GPUs are available to schedule ✅"
 # 6) Ensure nvidia-smi access (host check + helper pod)
 # -----------------------------
 
-log "Step 6: Verify nvidia-smi is available on the host (or create a helper pod)"
+# log "step 6: verify nvidia-smi is available on the host (or create a helper pod)"
 
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "nvidia-smi not found on host. Creating helper pod in ${NAMESPACE}..."
+# if ! command -v nvidia-smi >/dev/null 2>&1; then
+#   echo "nvidia-smi not found on host. Creating helper pod in ${NAMESPACE}..."
 
-  kubectl create namespace "${NAMESPACE}" >/dev/null 2>&1 || true
+#   kubectl create namespace "${NAMESPACE}" >/dev/null 2>&1 || true
 
-  if ! kubectl get runtimeclass nvidia >/dev/null 2>&1; then
-    echo "WARNING: RuntimeClass \"nvidia\" not found. Skipping helper pod creation."
-    echo "Hint: ensure the NVIDIA GPU Operator finished successfully, then re-run."
-    echo "Proceeding without nvidia-smi helper."
-  else
-    cat <<YAML | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: nvidia-smi-host
-  namespace: ${NAMESPACE}
-spec:
-  restartPolicy: Never
-  runtimeClassName: nvidia
-  hostPID: true
-  containers:
-  - name: smi
-    image: nvidia/cuda:12.3.2-base-ubuntu22.04
-    securityContext:
-      privileged: true
-    command: ["bash","-lc","nvidia-smi -L && nvidia-smi"]
-    volumeMounts:
-    - name: dev
-      mountPath: /dev
-  volumes:
-  - name: dev
-    hostPath:
-      path: /dev
-YAML
+#   if ! kubectl get runtimeclass nvidia >/dev/null 2>&1; then
+#     echo "WARNING: RuntimeClass \"nvidia\" not found. Skipping helper pod creation."
+#     echo "Hint: ensure the NVIDIA GPU Operator finished successfully, then re-run."
+#     echo "Proceeding without nvidia-smi helper."
+#   else
+#     cat <<YAML | kubectl apply -f -
+# apiVersion: v1
+# kind: Pod
+# metadata:
+#   name: nvidia-smi-host
+#   namespace: ${NAMESPACE}
+# spec:
+#   restartPolicy: Never
+#   runtimeClassName: nvidia
+#   hostPID: true
+#   containers:
+#   - name: smi
+#     image: nvidia/cuda:12.3.2-base-ubuntu22.04
+#     securityContext:
+#       privileged: true
+#     command: ["bash","-lc","nvidia-smi -L && nvidia-smi"]
+#     volumeMounts:
+#     - name: dev
+#       mountPath: /dev
+#   volumes:
+#   - name: dev
+#     hostPath:
+#       path: /dev
+# YAML
 
-    SHELL_NAME="$(basename "${SHELL:-}")"
-    case "${SHELL_NAME}" in
-      zsh) SHELL_RC_FILE="${HOME}/.zshrc" ;;
-      bash) SHELL_RC_FILE="${HOME}/.bashrc" ;;
-      *) SHELL_RC_FILE="${HOME}/.profile" ;;
-    esac
-
-    ALIAS_LINE="alias nvidia-smi='kubectl logs nvidia-smi-host -n ${NAMESPACE}'"
-    if [[ -f "${SHELL_RC_FILE}" ]]; then
-      if ! grep -Fqx "${ALIAS_LINE}" "${SHELL_RC_FILE}"; then
-        {
-          echo ""
-          echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
-          echo "${ALIAS_LINE}"
-        } >> "${SHELL_RC_FILE}"
-      fi
-    else
-      {
-        echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
-        echo "${ALIAS_LINE}"
-      } > "${SHELL_RC_FILE}"
-    fi
-
-    echo "Alias persisted in ${SHELL_RC_FILE}: ${ALIAS_LINE}"
-    echo "Tip: open a new shell or run: source ${SHELL_RC_FILE}"
-  fi
-else
-  echo "nvidia-smi found on host. Skipping helper pod and alias."
-fi
+#     log "Reading nvidia-smi output from helper pod logs"
+#     kubectl -n "${NAMESPACE}" wait --for=condition=Ready pod/nvidia-smi-host --timeout=10s || true
+#     kubectl -n "${NAMESPACE}" wait --for=condition=Succeeded pod/nvidia-smi-host --timeout=10s || true
+#     kubectl logs -n "${NAMESPACE}" nvidia-smi-host
+#   fi
+# else
+#   echo "nvidia-smi found on host. Skipping helper pod and alias."
+# fi
 
 echo "Next: Deploy a Dynamo GPU workload (e.g., vLLM decode worker) and ensure nvcr.io image pull works."
