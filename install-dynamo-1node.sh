@@ -6,15 +6,15 @@ set -euo pipefail
 #
 # What this script does (in order):
 #  1) Validates cluster access (kubectl) and Helm availability.
-#  2) Checks if nvidia-smi is available on the host; if not, deploys a helper pod
-#     and adds a persistent alias to access nvidia-smi via kubectl logs.
-#  3) Installs a default StorageClass (local-path-provisioner) so stateful pods
+#  2) Installs a default StorageClass (local-path-provisioner) so stateful pods
 #     like Dynamo's etcd and nats can get PersistentVolumes on a single node.
-#  4) Installs Dynamo CRDs (cluster-scoped) as required by the official guide.
-#  5) Installs the Dynamo Platform Helm chart into a chosen namespace.
-#  6) Waits and verifies pods + PVCs become ready/bound.
-#  7) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
+#  3) Installs Dynamo CRDs (cluster-scoped) as required by the official guide.
+#  4) Installs the Dynamo Platform Helm chart into a chosen namespace.
+#  5) Waits and verifies pods + PVCs become ready/bound.
+#  5) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
 #     GPU workloads (like vLLM decode workers) can schedule successfully.
+#  6) Checks if nvidia-smi is available on the host; if not, deploys a helper pod
+#     and adds a persistent alias to access nvidia-smi via kubectl logs.
 ###############################################################################
 
 # -----------------------------
@@ -128,75 +128,10 @@ echo "  GPU_ALLOCATABLE_WAIT_ATTEMPTS=${GPU_ALLOCATABLE_WAIT_ATTEMPTS}"
 echo "  GPU_ALLOCATABLE_WAIT_INTERVAL=${GPU_ALLOCATABLE_WAIT_INTERVAL}"
 
 # -----------------------------
-# 1) Ensure nvidia-smi access (host check + helper pod)
+# 1) Ensure default StorageClass exists (1-node correction)
 # -----------------------------
 
-log "Step 1: Verify nvidia-smi is available on the host (or create a helper pod)"
-
-if ! command -v nvidia-smi >/dev/null 2>&1; then
-  echo "nvidia-smi not found on host. Creating helper pod in ${NAMESPACE}..."
-
-  kubectl create namespace "${NAMESPACE}" >/dev/null 2>&1 || true
-
-  cat <<YAML | kubectl apply -f -
-apiVersion: v1
-kind: Pod
-metadata:
-  name: nvidia-smi-host
-  namespace: ${NAMESPACE}
-spec:
-  restartPolicy: Never
-  runtimeClassName: nvidia
-  hostPID: true
-  containers:
-  - name: smi
-    image: nvidia/cuda:12.3.2-base-ubuntu22.04
-    securityContext:
-      privileged: true
-    command: ["bash","-lc","nvidia-smi -L && nvidia-smi"]
-    volumeMounts:
-    - name: dev
-      mountPath: /dev
-  volumes:
-  - name: dev
-    hostPath:
-      path: /dev
-YAML
-
-  SHELL_NAME="$(basename "${SHELL:-}")"
-  case "${SHELL_NAME}" in
-    zsh) SHELL_RC_FILE="${HOME}/.zshrc" ;;
-    bash) SHELL_RC_FILE="${HOME}/.bashrc" ;;
-    *) SHELL_RC_FILE="${HOME}/.profile" ;;
-  esac
-
-  ALIAS_LINE="alias nvidia-smi='kubectl logs nvidia-smi-host -n ${NAMESPACE}'"
-  if [[ -f "${SHELL_RC_FILE}" ]]; then
-    if ! grep -Fqx "${ALIAS_LINE}" "${SHELL_RC_FILE}"; then
-      {
-        echo ""
-        echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
-        echo "${ALIAS_LINE}"
-      } >> "${SHELL_RC_FILE}"
-    fi
-  else
-    {
-      echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
-      echo "${ALIAS_LINE}"
-    } > "${SHELL_RC_FILE}"
-  fi
-
-  echo "Alias persisted in ${SHELL_RC_FILE}: ${ALIAS_LINE}"
-  echo "Tip: open a new shell or run: source ${SHELL_RC_FILE}"
-else
-  echo "nvidia-smi found on host. Skipping helper pod and alias."
-fi
-
-# -----------------------------
-# 2) Ensure default StorageClass exists (1-node correction)
-# -----------------------------
-
-log "Step 2: Ensure a default StorageClass exists (required so Dynamo etcd/nats PVCs can bind)"
+log "Step 1: Ensure a default StorageClass exists (required so Dynamo etcd/nats PVCs can bind)"
 # Why: Dynamo deploys stateful pods that request PersistentVolumes.
 #      Many 1-node kubeadm clusters have no dynamic provisioner by default.
 
@@ -234,10 +169,10 @@ log "StorageClasses:"
 kubectl get storageclass
 
 # -----------------------------
-# 3) Install Dynamo CRDs (official step)
+# 2) Install Dynamo CRDs (official step)
 # -----------------------------
 
-log "Step 3: Install Dynamo CRDs (cluster-scoped; per official guide)"
+log "Step 2: Install Dynamo CRDs (cluster-scoped; per official guide)"
 # Why: CRDs define Dynamo custom resources that the operator watches/manages.
 
 WORKDIR="$(mktemp -d)"
@@ -253,10 +188,10 @@ helm upgrade --install dynamo-crds "dynamo-crds-${RELEASE_VERSION}.tgz" --namesp
 popd >/dev/null
 
 # -----------------------------
-# 4) Install Dynamo Platform (official step)
+# 3) Install Dynamo Platform (official step)
 # -----------------------------
 
-log "Step 4: Install Dynamo Platform (per official guide) into namespace: ${NAMESPACE}"
+log "Step 3: Install Dynamo Platform (per official guide) into namespace: ${NAMESPACE}"
 # Why: This installs the operator and core platform services (including etcd and nats).
 
 pushd "${WORKDIR}" >/dev/null
@@ -288,10 +223,10 @@ helm upgrade --install dynamo-platform "dynamo-platform-${RELEASE_VERSION}.tgz" 
 popd >/dev/null
 
 # -----------------------------
-# 5) Wait for readiness and show useful diagnostics
+# 4) Wait for readiness and show useful diagnostics
 # -----------------------------
 
-log "Step 5: Verify pods and PVCs (this confirms the 1-node storage correction worked)"
+log "Step 4: Verify pods and PVCs (this confirms the 1-node storage correction worked)"
 # Why: If PVCs don't bind, etcd/nats will stay Pending and Dynamo won't function.
 
 echo "Current pods in ${NAMESPACE}:"
@@ -326,10 +261,10 @@ if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
 fi
 
 # -----------------------------
-# 6) Install NVIDIA GPU Operator (so GPU workloads can schedule)
+# 5) Install NVIDIA GPU Operator (so GPU workloads can schedule)
 # -----------------------------
 
-log "Step 6: Install NVIDIA GPU Operator (enables nvidia.com/gpu in Kubernetes)"
+log "Step 5: Install NVIDIA GPU Operator (enables nvidia.com/gpu in Kubernetes)"
 # Why:
 # - Your node has GPUs (nvidia-smi works), but Kubernetes only schedules GPU pods
 #   once the NVIDIA device plugin is running and advertising nvidia.com/gpu.
@@ -387,4 +322,76 @@ if [[ -z "${GPU_COUNT}" || "${GPU_COUNT}" == "0" ]]; then
 fi
 
 log "GPU Operator is installed and GPUs are available to schedule ✅"
+
+# -----------------------------
+# 6) Ensure nvidia-smi access (host check + helper pod)
+# -----------------------------
+
+log "Step 6: Verify nvidia-smi is available on the host (or create a helper pod)"
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi not found on host. Creating helper pod in ${NAMESPACE}..."
+
+  kubectl create namespace "${NAMESPACE}" >/dev/null 2>&1 || true
+
+  if ! kubectl get runtimeclass nvidia >/dev/null 2>&1; then
+    echo "WARNING: RuntimeClass \"nvidia\" not found. Skipping helper pod creation."
+    echo "Hint: ensure the NVIDIA GPU Operator finished successfully, then re-run."
+    echo "Proceeding without nvidia-smi helper."
+  else
+    cat <<YAML | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nvidia-smi-host
+  namespace: ${NAMESPACE}
+spec:
+  restartPolicy: Never
+  runtimeClassName: nvidia
+  hostPID: true
+  containers:
+  - name: smi
+    image: nvidia/cuda:12.3.2-base-ubuntu22.04
+    securityContext:
+      privileged: true
+    command: ["bash","-lc","nvidia-smi -L && nvidia-smi"]
+    volumeMounts:
+    - name: dev
+      mountPath: /dev
+  volumes:
+  - name: dev
+    hostPath:
+      path: /dev
+YAML
+
+    SHELL_NAME="$(basename "${SHELL:-}")"
+    case "${SHELL_NAME}" in
+      zsh) SHELL_RC_FILE="${HOME}/.zshrc" ;;
+      bash) SHELL_RC_FILE="${HOME}/.bashrc" ;;
+      *) SHELL_RC_FILE="${HOME}/.profile" ;;
+    esac
+
+    ALIAS_LINE="alias nvidia-smi='kubectl logs nvidia-smi-host -n ${NAMESPACE}'"
+    if [[ -f "${SHELL_RC_FILE}" ]]; then
+      if ! grep -Fqx "${ALIAS_LINE}" "${SHELL_RC_FILE}"; then
+        {
+          echo ""
+          echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
+          echo "${ALIAS_LINE}"
+        } >> "${SHELL_RC_FILE}"
+      fi
+    else
+      {
+        echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
+        echo "${ALIAS_LINE}"
+      } > "${SHELL_RC_FILE}"
+    fi
+
+    echo "Alias persisted in ${SHELL_RC_FILE}: ${ALIAS_LINE}"
+    echo "Tip: open a new shell or run: source ${SHELL_RC_FILE}"
+  fi
+else
+  echo "nvidia-smi found on host. Skipping helper pod and alias."
+fi
+
 echo "Next: Deploy a Dynamo GPU workload (e.g., vLLM decode worker) and ensure nvcr.io image pull works."
