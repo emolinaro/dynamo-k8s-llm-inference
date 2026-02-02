@@ -183,6 +183,18 @@ install -d -m 0755 "${PRIMARY_HOME}/.kube"
 cp -f /etc/kubernetes/admin.conf "${PRIMARY_HOME}/.kube/config"
 chown -R "${PRIMARY_USER}:${PRIMARY_USER}" "${PRIMARY_HOME}/.kube"
 
+KUBECTL_RC_FILE="${PRIMARY_HOME}/.bashrc"
+sudo -u "${PRIMARY_USER}" -H bash <<'EOF'
+set -euo pipefail
+
+RC_FILE="${HOME}/.bashrc"
+{
+  grep -Fqx "alias k=kubectl" "${RC_FILE}" || echo "alias k=kubectl"
+  grep -Fqx "source <(kubectl completion bash)" "${RC_FILE}" || echo "source <(kubectl completion bash)"
+  grep -Fqx "complete -F __start_kubectl k" "${RC_FILE}" || echo "complete -F __start_kubectl k"
+} >> "${RC_FILE}"
+EOF
+
 log "Step 11: Install Cilium CLI"
 CILIUM_CLI_VERSION="$(curl -fsSL https://raw.githubusercontent.com/cilium/cilium-cli/main/stable.txt)"
 CLI_ARCH="$(detect_arch)"
