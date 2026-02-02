@@ -6,12 +6,14 @@ set -euo pipefail
 #
 # What this script does (in order):
 #  1) Validates cluster access (kubectl) and Helm availability.
-#  2) Installs a default StorageClass (local-path-provisioner) so stateful pods
+#  2) Checks if nvidia-smi is available on the host; if not, deploys a helper pod
+#     and adds a persistent alias to access nvidia-smi via kubectl logs.
+#  3) Installs a default StorageClass (local-path-provisioner) so stateful pods
 #     like Dynamo's etcd and nats can get PersistentVolumes on a single node.
-#  3) Installs Dynamo CRDs (cluster-scoped) as required by the official guide.
-#  4) Installs the Dynamo Platform Helm chart into a chosen namespace.
-#  5) Waits and verifies pods + PVCs become ready/bound.
-#  6) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
+#  4) Installs Dynamo CRDs (cluster-scoped) as required by the official guide.
+#  5) Installs the Dynamo Platform Helm chart into a chosen namespace.
+#  6) Waits and verifies pods + PVCs become ready/bound.
+#  7) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
 #     GPU workloads (like vLLM decode workers) can schedule successfully.
 ###############################################################################
 
@@ -54,6 +56,13 @@ GPU_OPERATOR_RELEASE="${GPU_OPERATOR_RELEASE:-gpu-operator}"
 # NVIDIA Helm repo (hosts gpu-operator chart)
 NVIDIA_HELM_REPO_NAME="${NVIDIA_HELM_REPO_NAME:-nvidia}"
 NVIDIA_HELM_REPO_URL="${NVIDIA_HELM_REPO_URL:-https://helm.ngc.nvidia.com/nvidia}"
+
+# Helm wait timeout for GPU Operator install/upgrade
+GPU_OPERATOR_HELM_TIMEOUT="${GPU_OPERATOR_HELM_TIMEOUT:-15m}"
+
+# Wait tuning for nvidia.com/gpu to appear in node allocatable
+GPU_ALLOCATABLE_WAIT_ATTEMPTS="${GPU_ALLOCATABLE_WAIT_ATTEMPTS:-120}"
+GPU_ALLOCATABLE_WAIT_INTERVAL="${GPU_ALLOCATABLE_WAIT_INTERVAL:-5}"
 
 # -----------------------------
 # Helpers
@@ -114,12 +123,80 @@ echo "  ENABLE_KAI_SCHEDULER=${ENABLE_KAI_SCHEDULER}"
 echo "  PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}"
 echo "  GPU_OPERATOR_NS=${GPU_OPERATOR_NS}"
 echo "  GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}"
+echo "  GPU_OPERATOR_HELM_TIMEOUT=${GPU_OPERATOR_HELM_TIMEOUT}"
+echo "  GPU_ALLOCATABLE_WAIT_ATTEMPTS=${GPU_ALLOCATABLE_WAIT_ATTEMPTS}"
+echo "  GPU_ALLOCATABLE_WAIT_INTERVAL=${GPU_ALLOCATABLE_WAIT_INTERVAL}"
 
 # -----------------------------
-# 1) Ensure default StorageClass exists (1-node correction)
+# 1) Ensure nvidia-smi access (host check + helper pod)
 # -----------------------------
 
-log "Step 1: Ensure a default StorageClass exists (required so Dynamo etcd/nats PVCs can bind)"
+log "Step 1: Verify nvidia-smi is available on the host (or create a helper pod)"
+
+if ! command -v nvidia-smi >/dev/null 2>&1; then
+  echo "nvidia-smi not found on host. Creating helper pod in ${NAMESPACE}..."
+
+  kubectl create namespace "${NAMESPACE}" >/dev/null 2>&1 || true
+
+  cat <<YAML | kubectl apply -f -
+apiVersion: v1
+kind: Pod
+metadata:
+  name: nvidia-smi-host
+  namespace: ${NAMESPACE}
+spec:
+  restartPolicy: Never
+  runtimeClassName: nvidia
+  hostPID: true
+  containers:
+  - name: smi
+    image: nvidia/cuda:12.3.2-base-ubuntu22.04
+    securityContext:
+      privileged: true
+    command: ["bash","-lc","nvidia-smi -L && nvidia-smi"]
+    volumeMounts:
+    - name: dev
+      mountPath: /dev
+  volumes:
+  - name: dev
+    hostPath:
+      path: /dev
+YAML
+
+  SHELL_NAME="$(basename "${SHELL:-}")"
+  case "${SHELL_NAME}" in
+    zsh) SHELL_RC_FILE="${HOME}/.zshrc" ;;
+    bash) SHELL_RC_FILE="${HOME}/.bashrc" ;;
+    *) SHELL_RC_FILE="${HOME}/.profile" ;;
+  esac
+
+  ALIAS_LINE="alias nvidia-smi='kubectl logs nvidia-smi-host -n ${NAMESPACE}'"
+  if [[ -f "${SHELL_RC_FILE}" ]]; then
+    if ! grep -Fqx "${ALIAS_LINE}" "${SHELL_RC_FILE}"; then
+      {
+        echo ""
+        echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
+        echo "${ALIAS_LINE}"
+      } >> "${SHELL_RC_FILE}"
+    fi
+  else
+    {
+      echo "# Added by install-dynamo-1node.sh to access nvidia-smi via kubectl logs"
+      echo "${ALIAS_LINE}"
+    } > "${SHELL_RC_FILE}"
+  fi
+
+  echo "Alias persisted in ${SHELL_RC_FILE}: ${ALIAS_LINE}"
+  echo "Tip: open a new shell or run: source ${SHELL_RC_FILE}"
+else
+  echo "nvidia-smi found on host. Skipping helper pod and alias."
+fi
+
+# -----------------------------
+# 2) Ensure default StorageClass exists (1-node correction)
+# -----------------------------
+
+log "Step 2: Ensure a default StorageClass exists (required so Dynamo etcd/nats PVCs can bind)"
 # Why: Dynamo deploys stateful pods that request PersistentVolumes.
 #      Many 1-node kubeadm clusters have no dynamic provisioner by default.
 
@@ -157,10 +234,10 @@ log "StorageClasses:"
 kubectl get storageclass
 
 # -----------------------------
-# 2) Install Dynamo CRDs (official step)
+# 3) Install Dynamo CRDs (official step)
 # -----------------------------
 
-log "Step 2: Install Dynamo CRDs (cluster-scoped; per official guide)"
+log "Step 3: Install Dynamo CRDs (cluster-scoped; per official guide)"
 # Why: CRDs define Dynamo custom resources that the operator watches/manages.
 
 WORKDIR="$(mktemp -d)"
@@ -176,10 +253,10 @@ helm upgrade --install dynamo-crds "dynamo-crds-${RELEASE_VERSION}.tgz" --namesp
 popd >/dev/null
 
 # -----------------------------
-# 3) Install Dynamo Platform (official step)
+# 4) Install Dynamo Platform (official step)
 # -----------------------------
 
-log "Step 3: Install Dynamo Platform (per official guide) into namespace: ${NAMESPACE}"
+log "Step 4: Install Dynamo Platform (per official guide) into namespace: ${NAMESPACE}"
 # Why: This installs the operator and core platform services (including etcd and nats).
 
 pushd "${WORKDIR}" >/dev/null
@@ -211,10 +288,10 @@ helm upgrade --install dynamo-platform "dynamo-platform-${RELEASE_VERSION}.tgz" 
 popd >/dev/null
 
 # -----------------------------
-# 4) Wait for readiness and show useful diagnostics
+# 5) Wait for readiness and show useful diagnostics
 # -----------------------------
 
-log "Step 4: Verify pods and PVCs (this confirms the 1-node storage correction worked)"
+log "Step 5: Verify pods and PVCs (this confirms the 1-node storage correction worked)"
 # Why: If PVCs don't bind, etcd/nats will stay Pending and Dynamo won't function.
 
 echo "Current pods in ${NAMESPACE}:"
@@ -249,10 +326,10 @@ if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
 fi
 
 # -----------------------------
-# 5) Install NVIDIA GPU Operator (so GPU workloads can schedule)
+# 6) Install NVIDIA GPU Operator (so GPU workloads can schedule)
 # -----------------------------
 
-log "Step 5: Install NVIDIA GPU Operator (enables nvidia.com/gpu in Kubernetes)"
+log "Step 6: Install NVIDIA GPU Operator (enables nvidia.com/gpu in Kubernetes)"
 # Why:
 # - Your node has GPUs (nvidia-smi works), but Kubernetes only schedules GPU pods
 #   once the NVIDIA device plugin is running and advertising nvidia.com/gpu.
@@ -266,11 +343,13 @@ helm repo update >/dev/null
 log "Creating GPU Operator namespace (keeps GPU components isolated)"
 kubectl create namespace "${GPU_OPERATOR_NS}" >/dev/null 2>&1 || true
 
-log "Installing/upgrading GPU Operator (containerd runtime)"
+log "Installing/upgrading GPU Operator (containerd runtime, with --wait)"
 # Note: operator.defaultRuntime=containerd matches your kubeadm/containerd setup.
 helm upgrade --install "${GPU_OPERATOR_RELEASE}" "${NVIDIA_HELM_REPO_NAME}/gpu-operator" \
   -n "${GPU_OPERATOR_NS}" \
-  --set operator.defaultRuntime=containerd
+  --set operator.defaultRuntime=containerd \
+  --wait \
+  --timeout "${GPU_OPERATOR_HELM_TIMEOUT}"
 
 log "Waiting for GPU Operator pods to be Running/Completed"
 # Why: device plugin + toolkit DaemonSets must be ready before GPUs appear on nodes.
@@ -288,7 +367,17 @@ kubectl get pods -n "${GPU_OPERATOR_NS}"
 log "Verifying GPUs are visible to Kubernetes (nvidia.com/gpu allocatable)"
 kubectl get nodes -o custom-columns=NAME:.metadata.name,GPUS:.status.allocatable.nvidia\\.com/gpu
 
-GPU_COUNT="$(kubectl get nodes -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo "")"
+# It can take a while after pods are Running/Completed for node allocatable to update.
+log "Waiting for nvidia.com/gpu to appear in node allocatable"
+GPU_COUNT=""
+for ((i=1; i<=GPU_ALLOCATABLE_WAIT_ATTEMPTS; i++)); do
+  GPU_COUNT="$(kubectl get nodes -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo "")"
+  if [[ -n "${GPU_COUNT}" && "${GPU_COUNT}" != "0" ]]; then
+    break
+  fi
+  sleep "${GPU_ALLOCATABLE_WAIT_INTERVAL}"
+done
+
 if [[ -z "${GPU_COUNT}" || "${GPU_COUNT}" == "0" ]]; then
   echo "ERROR: Kubernetes still shows 0 GPUs allocatable. GPU Operator may not be fully ready." >&2
   echo "Debug:" >&2

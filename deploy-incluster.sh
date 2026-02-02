@@ -322,6 +322,46 @@ fi
 # -----------------------------
 log "Converting services from this deployment to NodePort for external access"
 
+# Refresh service list right before NodePort conversion to catch late-created services.
+if [[ -n "${MANIFEST_SERVICE_NAMES}" ]]; then
+  CURRENT_SERVICE_NAMES="${MANIFEST_SERVICE_NAMES}"
+elif [[ -n "${MANIFEST_RESOURCE_NAMES}" ]]; then
+  CURRENT_SERVICE_NAMES="$(kubectl -n "${NAMESPACE}" get svc --no-headers 2>/dev/null | \
+    awk -v names="${MANIFEST_RESOURCE_NAMES}" '
+      BEGIN{
+        split(names, a, " ");
+        for (i in a) if (a[i] != "") pats[a[i]] = 1;
+      }
+      {
+        svc=$1
+        if (svc ~ /^dynamo-platform-/ || svc ~ /-operator-/ || svc=="etcd" || svc=="nats") next
+        for (p in pats) {
+          if (index(svc, p) == 1) { print svc; next }
+        }
+      }' | sort -u)"
+fi
+
+# If a frontend service exists but wasn't picked up yet, wait a bit and include it.
+if ! echo "${CURRENT_SERVICE_NAMES:-}" | tr ' ' '\n' | grep -q "frontend"; then
+  log "Waiting for frontend service to appear..."
+  start_ts="$(date +%s)"
+  while true; do
+    frontend_svc="$(kubectl -n "${NAMESPACE}" get svc --no-headers 2>/dev/null | awk '/frontend/ {print $1; exit}')"
+    if [[ -n "${frontend_svc}" ]]; then
+      CURRENT_SERVICE_NAMES="${CURRENT_SERVICE_NAMES} ${frontend_svc}"
+      CURRENT_SERVICE_NAMES="$(echo "${CURRENT_SERVICE_NAMES}" | tr ' ' '\n' | awk 'NF' | sort -u | tr '\n' ' ')"
+      CURRENT_SERVICE_NAMES="${CURRENT_SERVICE_NAMES%% }"
+      break
+    fi
+    now_ts="$(date +%s)"
+    if (( now_ts - start_ts > SERVICES_TIMEOUT )); then
+      warn "Timed out waiting for frontend service."
+      break
+    fi
+    sleep 3
+  done
+fi
+
 # If no services were found initially, try to find them again (they might have been created by CRD controller)
 if [[ -z "${CURRENT_SERVICE_NAMES}" ]] && [[ -n "${MANIFEST_RESOURCE_NAMES}" ]]; then
   log "Services not found initially, waiting for DynamoGraphDeployment to create them..."
