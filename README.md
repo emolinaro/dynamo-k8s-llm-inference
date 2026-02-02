@@ -193,6 +193,32 @@ An example DynamoGraphDeploymentRequest (DGDR) workflow for TRT-LLM is provided:
 
 - `examples/dgdr/trtllm/` (includes `disagg.yaml`, `dgdr.yaml`, and `run-dgdr.sh`)
 
+### Persistent Model Cache (PVC)
+
+For TRT-LLM disaggregated deployments, you can mount a persistent volume for model weights. This repo includes:
+
+- `examples/dgdr/trtllm/llm-models-pvc.yaml` (PVC)
+- `examples/dgdr/trtllm/disagg_cache.yaml` (DGD that mounts the PVC)
+
+Notes:
+
+- The PVC must be created in the same namespace as the deployment.
+- StorageClass is cluster-scoped; ensure a suitable StorageClass exists before creating the PVC.
+
+Create the PVC:
+
+```bash
+kubectl apply -f examples/dgdr/trtllm/llm-models-pvc.yaml -n dynamo-system
+kubectl get pvc llm-models -n dynamo-system -o wide
+kubectl describe pvc llm-models -n dynamo-system
+```
+
+Deploy with the cached config:
+
+```bash
+DISAGG_FILE=disagg_cache.yaml ./examples/dgdr/trtllm/run-dgdr.sh
+```
+
 ## Accessing the Inference Server
 
 After deployment, the inference server is accessible via NodePort. The deployment script prints the access URL, typically:
