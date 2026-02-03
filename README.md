@@ -75,9 +75,6 @@ Once the cluster is up, you can run a few quick checks to validate Cilium and Hu
 # Quick health check
 cilium status --wait
 
-# Optional: verify Hubble is healthy (if ENABLE_HUBBLE=true)
-cilium hubble status
-
 # Optional: show Cilium/Hubble pods in kube-system
 kubectl -n kube-system get pods -o wide | grep -E 'cilium|hubble'
 ```
@@ -145,7 +142,7 @@ curl -sS "$DYNAMO_BASE_URL/v1/models" | jq .
 Use the interactive chat script:
 
 ```bash
-./chat.sh
+API_URL=http://<NODE_IP>:<NODEPORT>/v1/chat/completions ./chat.sh
 ```
 
 This provides an interactive interface that:
