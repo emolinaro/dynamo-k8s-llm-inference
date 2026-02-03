@@ -79,6 +79,7 @@ export MATCH=your-pattern
 
 - Get a secret value (base64 decode)
   ```sh
+  KEY=HF_TOKEN # or any other secret key
   kubectl get secret $SECRET -n $NAMESPACE -o jsonpath='{.data.$KEY}' | base64 -d
   ```
 
