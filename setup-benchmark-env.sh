@@ -17,7 +17,7 @@ source .venv/bin/activate
 
 # Install benchmark dependencies
 DYNAMO_REPO_URL="${DYNAMO_REPO_URL:-https://github.com/ai-dynamo/dynamo.git}"
-DYNAMO_REPO_REF="${DYNAMO_REPO_REF:-v0.8.1}"
+DYNAMO_REPO_REF="${DYNAMO_REPO_REF:-v0.9.0}"
 
 if [[ ! -d ../dynamo ]]; then
   if ! command -v git >/dev/null 2>&1; then
