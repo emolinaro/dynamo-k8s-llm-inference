@@ -44,6 +44,7 @@ Override any script env vars inline:
 ```bash
 RELEASE_VERSION=0.9.0 make dynamo
 K8S_REPO_MINOR=v1.35 POD_CIDR=10.1.0.0/16 make k8s
+RELEASE_VERSION=0.9.0 CHART_SOURCE=source make dynamo
 ```
 
 ### Option B: Scripts
@@ -97,7 +98,7 @@ cilium hubble ui -n kube-system
 Install NVIDIA Dynamo Platform and GPU Operator:
 
 ```bash
-export RELEASE_VERSION=0.9.0  # Adjust to match your Dynamo version
+export RELEASE_VERSION=0.9.0  # Adjust to match your Dynamo release version
 ./install-dynamo-1node.sh
 ```
 
@@ -111,6 +112,32 @@ If you're installing on a shared cluster where Dynamo CRDs already exist, skip C
 
 ```bash
 SKIP_CRDS=true ./install-dynamo-1node.sh
+```
+
+If chart publication lags behind a release tag, pin chart version separately:
+
+```bash
+RELEASE_VERSION=0.9.0 CHART_VERSION=<published-chart-version> ./install-dynamo-1node.sh
+```
+
+Install charts directly from Dynamo source (for example, if `0.9.0` charts are not yet in NGC):
+
+```bash
+RELEASE_VERSION=0.9.0 CHART_SOURCE=source DYNAMO_REPO_REF=v0.9.0 ./install-dynamo-1node.sh
+```
+
+Source mode auto-discovers chart directories by `Chart.yaml` name if the default `DYNAMO_SOURCE_HELM_DIR` path does not match the repo layout.
+
+For `0.9.x`, bundled `etcd` and `nats` are disabled by default (`DISABLE_ETCD_NATS=auto`). Override if needed:
+
+```bash
+DISABLE_ETCD_NATS=false ./install-dynamo-1node.sh
+```
+
+If you need to force NGC chart transport mode:
+
+```bash
+HELM_CHART_MODE=oci ./install-dynamo-1node.sh
 ```
 
 ### 3. Deploy from an Example Manifest
@@ -176,9 +203,16 @@ Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 
 **Configuration:**
 - `NAMESPACE`: Dynamo namespace (default: `dynamo-system`)
-- `RELEASE_VERSION`: Dynamo release version (default: `0.9.0`)
+- `RELEASE_VERSION`: Dynamo release/runtime version (default: `0.9.0`)
+- `CHART_VERSION`: Dynamo Helm chart version (default: `RELEASE_VERSION`)
+- `CHART_SOURCE`: Chart source mode: `ngc` | `source` | `auto` (default: `ngc`)
+- `DYNAMO_REPO_URL`: Git URL for source-chart installs (default: `https://github.com/ai-dynamo/dynamo.git`)
+- `DYNAMO_REPO_REF`: Git ref for source-chart installs (default: `v${RELEASE_VERSION}`)
+- `DYNAMO_SOURCE_HELM_DIR`: Helm chart path in source repo (default: `deploy/cloud/helm`)
 - `NAMESPACE_RESTRICTED_OPERATOR`: Enable namespace restriction (default: `false`)
 - `SKIP_CRDS`: Skip CRD installation (default: `false`)
+- `DISABLE_ETCD_NATS`: Disable bundled `etcd`/`nats`: `auto` | `true` | `false` (default: `auto`)
+- `HELM_CHART_MODE`: NGC chart transport mode: `auto` | `oci` | `http` (default: `auto`)
 - `GPU_OPERATOR_NS`: GPU Operator namespace (default: `gpu-operator`)
 
 ### `deploy-incluster.sh`

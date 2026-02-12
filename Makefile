@@ -2,6 +2,10 @@ SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
 
 RELEASE_VERSION ?= 0.9.0
+CHART_VERSION ?= $(RELEASE_VERSION)
+CHART_SOURCE ?= ngc
+DYNAMO_REPO_REF ?= v$(RELEASE_VERSION)
+DISABLE_ETCD_NATS ?= auto
 
 .PHONY: help k8s dynamo install benchmark-env all
 
@@ -16,7 +20,7 @@ k8s:
 	sudo -E ./k8s-single-node-cilium.sh
 
 dynamo:
-	RELEASE_VERSION="$(RELEASE_VERSION)" ./install-dynamo-1node.sh
+	RELEASE_VERSION="$(RELEASE_VERSION)" CHART_VERSION="$(CHART_VERSION)" CHART_SOURCE="$(CHART_SOURCE)" DYNAMO_REPO_REF="$(DYNAMO_REPO_REF)" DISABLE_ETCD_NATS="$(DISABLE_ETCD_NATS)" ./install-dynamo-1node.sh
 
 install: k8s dynamo
 
