@@ -6,14 +6,14 @@ set -euo pipefail
 #
 # What this script does (in order):
 #  1) Validates cluster access (kubectl) and Helm availability.
-#  2) Installs a default StorageClass (local-path-provisioner) so stateful pods
-#     like Dynamo's etcd and nats can get PersistentVolumes on a single node.
+#  2) Installs a default StorageClass (local-path-provisioner) for single-node
+#     clusters that need PVCs (optional but recommended).
 #  3) Installs Dynamo CRDs (cluster-scoped) as required by the official guide.
 #  4) Installs the Dynamo Platform Helm chart into a chosen namespace.
 #  5) Waits and verifies pods + PVCs become ready/bound.
-#  5) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
+#  6) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
 #     GPU workloads (like vLLM decode workers) can schedule successfully.
-#  6) Checks if nvidia-smi is available on the host; if not, deploys a helper pod.
+#  7) Checks if nvidia-smi is available on the host; if not, deploys a helper pod.
 ##################################################################################
 
 # -----------------------------
@@ -25,11 +25,14 @@ NAMESPACE="${NAMESPACE:-dynamo-system}"
 
 # Dynamo release version. The official guide expects you to set this.
 # Example: export RELEASE_VERSION=0.x.y (match NVIDIA Dynamo release you're using)
-RELEASE_VERSION="${RELEASE_VERSION:-0.8.1}"
+RELEASE_VERSION="${RELEASE_VERSION:-0.9.0}"
 
 # If you are on a shared/multi-tenant cluster and need namespace restriction, set:
 # export NAMESPACE_RESTRICTED_OPERATOR=true
 NAMESPACE_RESTRICTED_OPERATOR="${NAMESPACE_RESTRICTED_OPERATOR:-false}"
+
+# Skip CRD installation (useful for shared clusters with existing CRDs)
+SKIP_CRDS="${SKIP_CRDS:-false}"
 
 # Optional multinode components (NOT needed for 1-node cluster; keep false)
 ENABLE_GROVE="${ENABLE_GROVE:-false}"
@@ -117,6 +120,7 @@ log "Using configuration:"
 echo "  NAMESPACE=${NAMESPACE}"
 echo "  RELEASE_VERSION=${RELEASE_VERSION}"
 echo "  NAMESPACE_RESTRICTED_OPERATOR=${NAMESPACE_RESTRICTED_OPERATOR}"
+echo "  SKIP_CRDS=${SKIP_CRDS}"
 echo "  ENABLE_GROVE=${ENABLE_GROVE}"
 echo "  ENABLE_KAI_SCHEDULER=${ENABLE_KAI_SCHEDULER}"
 echo "  PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}"
@@ -130,8 +134,8 @@ echo "  GPU_ALLOCATABLE_WAIT_INTERVAL=${GPU_ALLOCATABLE_WAIT_INTERVAL}"
 # 1) Ensure default StorageClass exists (1-node correction)
 # -----------------------------
 
-log "Step 1: Ensure a default StorageClass exists (required so Dynamo etcd/nats PVCs can bind)"
-# Why: Dynamo deploys stateful pods that request PersistentVolumes.
+log "Step 1: Ensure a default StorageClass exists (recommended for PVCs on 1-node clusters)"
+# Why: Some Dynamo components or workloads may request PersistentVolumes.
 #      Many 1-node kubeadm clusters have no dynamic provisioner by default.
 
 if ! kubectl get storageclass >/dev/null 2>&1; then
@@ -177,21 +181,30 @@ log "Step 2: Install Dynamo CRDs (cluster-scoped; per official guide)"
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
-pushd "${WORKDIR}" >/dev/null
+if [[ "${SKIP_CRDS}" == "true" ]]; then
+  echo "SKIP_CRDS=true -> skipping CRD installation."
+else
+  if kubectl get crd -o name | grep -qi "dynamo"; then
+    echo "Detected existing Dynamo CRDs."
+    echo "If this is a shared cluster, set SKIP_CRDS=true to skip reinstalling CRDs."
+  fi
 
-helm fetch "https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-crds-${RELEASE_VERSION}.tgz"
+  pushd "${WORKDIR}" >/dev/null
 
-# Use upgrade --install so the script can be re-run safely.
-helm upgrade --install dynamo-crds "dynamo-crds-${RELEASE_VERSION}.tgz" --namespace default
+  helm fetch "https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-crds-${RELEASE_VERSION}.tgz"
 
-popd >/dev/null
+  # Use upgrade --install so the script can be re-run safely.
+  helm upgrade --install dynamo-crds "dynamo-crds-${RELEASE_VERSION}.tgz" --namespace default
+
+  popd >/dev/null
+fi
 
 # -----------------------------
 # 3) Install Dynamo Platform (official step)
 # -----------------------------
 
 log "Step 3: Install Dynamo Platform (per official guide) into namespace: ${NAMESPACE}"
-# Why: This installs the operator and core platform services (including etcd and nats).
+# Why: This installs the operator and core platform services.
 
 pushd "${WORKDIR}" >/dev/null
 
@@ -226,7 +239,7 @@ popd >/dev/null
 # -----------------------------
 
 log "Step 4: Verify pods and PVCs (this confirms the 1-node storage correction worked)"
-# Why: If PVCs don't bind, etcd/nats will stay Pending and Dynamo won't function.
+# Why: If PVCs don't bind, stateful components may stay Pending.
 
 echo "Current pods in ${NAMESPACE}:"
 kubectl get pods -n "${NAMESPACE}" -o wide || true
@@ -235,14 +248,27 @@ echo
 echo "Current PVCs in ${NAMESPACE}:"
 kubectl get pvc -n "${NAMESPACE}" || true
 
-log "Waiting for etcd StatefulSet pod to be Ready..."
-kubectl wait -n "${NAMESPACE}" --for=condition=Ready pod/dynamo-platform-etcd-0 --timeout=600s
+log "Waiting for platform deployments to become Available..."
+DEPLOYS="$(kubectl -n "${NAMESPACE}" get deploy -o name 2>/dev/null || true)"
+if [[ -n "${DEPLOYS}" ]]; then
+  while read -r deploy; do
+    [[ -z "${deploy}" ]] && continue
+    kubectl -n "${NAMESPACE}" rollout status "${deploy}" --timeout=600s
+  done <<< "${DEPLOYS}"
+else
+  echo "No deployments found in namespace ${NAMESPACE} yet."
+fi
 
-log "Waiting for nats StatefulSet pod to be Ready..."
-kubectl wait -n "${NAMESPACE}" --for=condition=Ready pod/dynamo-platform-nats-0 --timeout=600s
-
-log "Waiting for operator controller manager deployment to be Available..."
-kubectl -n "${NAMESPACE}" wait --for=condition=Available deploy/dynamo-platform-dynamo-operator-controller-manager --timeout=600s
+log "Waiting for platform StatefulSets to become Ready..."
+STATEFULSETS="$(kubectl -n "${NAMESPACE}" get sts -o name 2>/dev/null || true)"
+if [[ -n "${STATEFULSETS}" ]]; then
+  while read -r sts; do
+    [[ -z "${sts}" ]] && continue
+    kubectl -n "${NAMESPACE}" rollout status "${sts}" --timeout=600s
+  done <<< "${STATEFULSETS}"
+else
+  echo "No StatefulSets found in namespace ${NAMESPACE}."
+fi
 
 log "Final status:"
 kubectl get pods -n "${NAMESPACE}" -o wide

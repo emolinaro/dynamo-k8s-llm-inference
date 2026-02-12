@@ -1,6 +1,8 @@
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
 
+RELEASE_VERSION ?= 0.9.0
+
 .PHONY: help k8s dynamo install benchmark-env all
 
 help:
@@ -14,7 +16,7 @@ k8s:
 	sudo -E ./k8s-single-node-cilium.sh
 
 dynamo:
-	./install-dynamo-1node.sh
+	RELEASE_VERSION="$(RELEASE_VERSION)" ./install-dynamo-1node.sh
 
 install: k8s dynamo
 

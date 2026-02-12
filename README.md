@@ -42,7 +42,7 @@ Run a benchmark:
 Override any script env vars inline:
 
 ```bash
-RELEASE_VERSION=0.8.1 make dynamo
+RELEASE_VERSION=0.9.0 make dynamo
 K8S_REPO_MINOR=v1.35 POD_CIDR=10.1.0.0/16 make k8s
 ```
 
@@ -97,7 +97,7 @@ cilium hubble ui -n kube-system
 Install NVIDIA Dynamo Platform and GPU Operator:
 
 ```bash
-export RELEASE_VERSION=0.8.1  # Adjust to match your Dynamo version
+export RELEASE_VERSION=0.9.0  # Adjust to match your Dynamo version
 ./install-dynamo-1node.sh
 ```
 
@@ -106,6 +106,12 @@ This script will:
 - Install Dynamo CRDs and Platform components
 - Install NVIDIA GPU Operator to enable GPU scheduling
 - Verify that GPUs are allocatable in Kubernetes
+
+If you're installing on a shared cluster where Dynamo CRDs already exist, skip CRD installation:
+
+```bash
+SKIP_CRDS=true ./install-dynamo-1node.sh
+```
 
 ### 3. Deploy from an Example Manifest
 
@@ -170,8 +176,9 @@ Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 
 **Configuration:**
 - `NAMESPACE`: Dynamo namespace (default: `dynamo-system`)
-- `RELEASE_VERSION`: Dynamo release version (default: `0.8.1`)
+- `RELEASE_VERSION`: Dynamo release version (default: `0.9.0`)
 - `NAMESPACE_RESTRICTED_OPERATOR`: Enable namespace restriction (default: `false`)
+- `SKIP_CRDS`: Skip CRD installation (default: `false`)
 - `GPU_OPERATOR_NS`: GPU Operator namespace (default: `gpu-operator`)
 
 ### `deploy-incluster.sh`
@@ -330,8 +337,7 @@ kubectl logs -n dynamo-system <pod-name> -f
 │  ┌──────────────────────────────────────────────────┐   │
 │  │         NVIDIA Dynamo Platform                   │   │
 │  │  - Operator Controller                           │   │
-│  │  - etcd (state)                                  │   │
-│  │  - NATS (messaging)                              │   │
+│  │  - Platform services + operator                   │   │
 │  └──────────────────────────────────────────────────┘   │
 │                                                         │
 │  ┌──────────────────────────────────────────────────┐   │
