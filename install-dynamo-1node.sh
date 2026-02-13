@@ -32,17 +32,6 @@ RELEASE_VERSION="${RELEASE_VERSION:-0.9.0}"
 # publication lags behind a source-code release tag.
 CHART_VERSION="${CHART_VERSION:-${RELEASE_VERSION}}"
 
-# Dynamo Helm chart source:
-# - ngc: install charts from NGC (oci/http, controlled by HELM_CHART_MODE)
-# - source: clone Dynamo source and install charts from local paths
-# - auto: try NGC first, then source fallback
-CHART_SOURCE="${CHART_SOURCE:-ngc}"
-
-# Source-chart settings (used when CHART_SOURCE=source or auto fallback)
-DYNAMO_REPO_URL="${DYNAMO_REPO_URL:-https://github.com/ai-dynamo/dynamo.git}"
-DYNAMO_REPO_REF="${DYNAMO_REPO_REF:-v${RELEASE_VERSION}}"
-DYNAMO_SOURCE_HELM_DIR="${DYNAMO_SOURCE_HELM_DIR:-deploy/cloud/helm}"
-
 # If you are on a shared/multi-tenant cluster and need namespace restriction, set:
 # export NAMESPACE_RESTRICTED_OPERATOR=true
 NAMESPACE_RESTRICTED_OPERATOR="${NAMESPACE_RESTRICTED_OPERATOR:-false}"
@@ -57,7 +46,7 @@ SKIP_CRDS="${SKIP_CRDS:-false}"
 # - false: always keep bundled etcd/nats enabled
 DISABLE_ETCD_NATS="${DISABLE_ETCD_NATS:-auto}"
 
-# Helm chart source mode:
+# Helm chart transport mode:
 # - auto: try OCI first, fall back to legacy https fetch
 # - oci: force OCI registry (oci://helm.ngc.nvidia.com/...)
 # - http: force legacy https fetch (https://helm.ngc.nvidia.com/...)
@@ -70,6 +59,9 @@ ENABLE_KAI_SCHEDULER="${ENABLE_KAI_SCHEDULER:-false}"
 # Prometheus endpoint URL (where Dynamo sends metrics)
 # Default: kube-prometheus-stack Prometheus service in monitoring namespace
 PROMETHEUS_ENDPOINT="${PROMETHEUS_ENDPOINT:-http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090}"
+
+# Timeout for operator + webhook readiness check
+OPERATOR_WEBHOOK_TIMEOUT="${OPERATOR_WEBHOOK_TIMEOUT:-600}"
 
 # Local-path provisioner manifest URL (lightweight dynamic PV provisioning)
 LOCAL_PATH_MANIFEST_URL="${LOCAL_PATH_MANIFEST_URL:-https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml}"
@@ -109,110 +101,7 @@ need_cmd() {
   fi
 }
 
-prepare_dynamo_source_charts() {
-  need_cmd git
-
-  if [[ -n "${DYNAMO_SOURCE_ROOT:-}" && -d "${DYNAMO_SOURCE_ROOT}" ]]; then
-    return 0
-  fi
-
-  DYNAMO_SOURCE_ROOT="${WORKDIR}/dynamo-source"
-  local err_file
-  err_file="$(mktemp)"
-
-  log "Cloning Dynamo source charts from ${DYNAMO_REPO_URL} @ ${DYNAMO_REPO_REF}"
-  if ! git clone --depth 1 --branch "${DYNAMO_REPO_REF}" "${DYNAMO_REPO_URL}" "${DYNAMO_SOURCE_ROOT}" \
-    2> >(tee "${err_file}" >&2); then
-    echo "ERROR: Failed to clone Dynamo source for chart installation." >&2
-    echo "Check DYNAMO_REPO_URL and DYNAMO_REPO_REF." >&2
-    rm -f "${err_file}"
-    return 1
-  fi
-  rm -f "${err_file}"
-}
-
-chart_source_subdir() {
-  local chart="$1"
-  case "${chart}" in
-    dynamo-crds) echo "crds" ;;
-    dynamo-platform) echo "platform" ;;
-    *) echo "${chart}" ;;
-  esac
-}
-
-chart_name_matches() {
-  local requested="$1"
-  local found="$2"
-  case "${requested}" in
-    dynamo-crds)
-      [[ "${found}" == "dynamo-crds" || "${found}" == "crds" ]]
-      ;;
-    dynamo-platform)
-      [[ "${found}" == "dynamo-platform" || "${found}" == "platform" ]]
-      ;;
-    *)
-      [[ "${found}" == "${requested}" ]]
-      ;;
-  esac
-}
-
-resolve_source_chart_path() {
-  local chart="$1"
-  local subdir
-  local candidate
-  local discovered=""
-  local chart_yaml
-  local chart_name
-
-  subdir="$(chart_source_subdir "${chart}")"
-  candidate="${DYNAMO_SOURCE_ROOT}/${DYNAMO_SOURCE_HELM_DIR}/${subdir}"
-  if [[ -f "${candidate}/Chart.yaml" ]]; then
-    echo "${candidate}"
-    return 0
-  fi
-
-  while IFS= read -r chart_yaml; do
-    chart_name="$(awk -F': *' '/^name:[[:space:]]*/{gsub(/["'"'"']/, "", $2); print $2; exit}' "${chart_yaml}")"
-    if chart_name_matches "${chart}" "${chart_name}"; then
-      discovered="$(dirname "${chart_yaml}")"
-      break
-    fi
-  done < <(find "${DYNAMO_SOURCE_ROOT}" -type f -name Chart.yaml 2>/dev/null)
-
-  if [[ -n "${discovered}" ]]; then
-    echo "${discovered}"
-    return 0
-  fi
-
-  return 1
-}
-
-helm_install_chart_from_source() {
-  local release="$1"
-  local chart="$2"
-  local namespace="$3"
-  shift 3
-  local extra_args=("$@")
-
-  prepare_dynamo_source_charts
-
-  local chart_path
-  chart_path="$(resolve_source_chart_path "${chart}" || true)"
-
-  if [[ -z "${chart_path}" || ! -f "${chart_path}/Chart.yaml" ]]; then
-    echo "ERROR: Could not locate source chart '${chart}' in ${DYNAMO_SOURCE_ROOT}." >&2
-    echo "Tried configured layout base: ${DYNAMO_SOURCE_HELM_DIR}" >&2
-    echo "Set DYNAMO_SOURCE_HELM_DIR to the correct chart base directory in the source repo." >&2
-    return 1
-  fi
-
-  echo "Using source chart path: ${chart_path}"
-  log "Building source chart dependencies for ${chart}"
-  helm dependency build "${chart_path}"
-  helm upgrade --install "${release}" "${chart_path}" --namespace "${namespace}" "${extra_args[@]}"
-}
-
-helm_install_chart_from_ngc() {
+helm_install_chart() {
   local release="$1"
   local chart="$2"
   local namespace="$3"
@@ -280,34 +169,6 @@ helm_install_chart_from_ngc() {
       ;;
     *)
       echo "ERROR: HELM_CHART_MODE must be one of: auto|oci|http" >&2
-      exit 1
-      ;;
-  esac
-}
-
-helm_install_chart() {
-  local release="$1"
-  local chart="$2"
-  local namespace="$3"
-  shift 3
-  local extra_args=("$@")
-
-  case "${CHART_SOURCE}" in
-    ngc)
-      helm_install_chart_from_ngc "${release}" "${chart}" "${namespace}" "${extra_args[@]}"
-      ;;
-    source)
-      helm_install_chart_from_source "${release}" "${chart}" "${namespace}" "${extra_args[@]}"
-      ;;
-    auto)
-      if helm_install_chart_from_ngc "${release}" "${chart}" "${namespace}" "${extra_args[@]}"; then
-        return 0
-      fi
-      echo "WARN: NGC chart install failed for ${chart}. Falling back to source charts..." >&2
-      helm_install_chart_from_source "${release}" "${chart}" "${namespace}" "${extra_args[@]}"
-      ;;
-    *)
-      echo "ERROR: CHART_SOURCE must be one of: ngc|source|auto" >&2
       exit 1
       ;;
   esac
@@ -412,6 +273,25 @@ kube_wait_rollout() {
   kubectl -n "$ns" rollout status "deploy/$deploy" --timeout=300s
 }
 
+wait_for_service_endpoints() {
+  local ns="$1"
+  local svc="$2"
+  local timeout="$3"
+  local start
+  start="$(date +%s)"
+
+  while true; do
+    if kubectl -n "${ns}" get endpoints "${svc}" -o jsonpath='{.subsets[0].addresses[0].ip}' >/dev/null 2>&1; then
+      return 0
+    fi
+
+    if (( "$(date +%s)" - start > timeout )); then
+      return 1
+    fi
+    sleep 5
+  done
+}
+
 # -----------------------------
 # 0) Pre-flight checks
 # -----------------------------
@@ -419,9 +299,6 @@ kube_wait_rollout() {
 log "Pre-flight: verify kubectl + helm are available"
 need_cmd kubectl
 need_cmd helm
-if [[ "${CHART_SOURCE}" == "source" ]]; then
-  need_cmd git
-fi
 
 log "Pre-flight: verify kubectl can talk to the cluster"
 # Why: fail early if kubeconfig is wrong or the cluster is down.
@@ -444,10 +321,6 @@ log "Using configuration:"
 echo "  NAMESPACE=${NAMESPACE}"
 echo "  RELEASE_VERSION=${RELEASE_VERSION}"
 echo "  CHART_VERSION=${CHART_VERSION}"
-echo "  CHART_SOURCE=${CHART_SOURCE}"
-echo "  DYNAMO_REPO_URL=${DYNAMO_REPO_URL}"
-echo "  DYNAMO_REPO_REF=${DYNAMO_REPO_REF}"
-echo "  DYNAMO_SOURCE_HELM_DIR=${DYNAMO_SOURCE_HELM_DIR}"
 echo "  NAMESPACE_RESTRICTED_OPERATOR=${NAMESPACE_RESTRICTED_OPERATOR}"
 echo "  SKIP_CRDS=${SKIP_CRDS}"
 echo "  DISABLE_ETCD_NATS=${DISABLE_ETCD_NATS}"
@@ -455,6 +328,7 @@ echo "  HELM_CHART_MODE=${HELM_CHART_MODE}"
 echo "  ENABLE_GROVE=${ENABLE_GROVE}"
 echo "  ENABLE_KAI_SCHEDULER=${ENABLE_KAI_SCHEDULER}"
 echo "  PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}"
+echo "  OPERATOR_WEBHOOK_TIMEOUT=${OPERATOR_WEBHOOK_TIMEOUT}"
 echo "  GPU_OPERATOR_NS=${GPU_OPERATOR_NS}"
 echo "  GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}"
 echo "  GPU_OPERATOR_HELM_TIMEOUT=${GPU_OPERATOR_HELM_TIMEOUT}"
@@ -544,6 +418,10 @@ pushd "${WORKDIR}" >/dev/null
 # Build Helm flags based on options.
 HELM_FLAGS=(--create-namespace)
 
+# Keep webhook explicitly enabled (defensive). We rely on admission webhooks for
+# early validation and deploy-incluster depends on this endpoint.
+HELM_FLAGS+=(--set "dynamo-operator.webhook.enabled=true")
+
 if [[ "${NAMESPACE_RESTRICTED_OPERATOR}" == "true" ]]; then
   HELM_FLAGS+=(--set "dynamo-operator.namespaceRestriction.enabled=true")
 fi
@@ -569,6 +447,19 @@ fi
 
 helm_install_chart "dynamo-platform" "dynamo-platform" "${NAMESPACE}" "${HELM_FLAGS[@]}"
 remove_operator_enable_webhooks_flag_if_present "${NAMESPACE}"
+
+log "Step 3a: Verify Dynamo operator webhook endpoint is ready"
+kubectl -n "${NAMESPACE}" rollout status deploy/dynamo-platform-dynamo-operator-controller-manager \
+  --timeout="${OPERATOR_WEBHOOK_TIMEOUT}s"
+if ! wait_for_service_endpoints "${NAMESPACE}" "dynamo-platform-dynamo-operator-webhook-service" "${OPERATOR_WEBHOOK_TIMEOUT}"; then
+  echo "ERROR: Dynamo webhook service has no ready endpoints after install." >&2
+  echo "Debug:" >&2
+  echo "  kubectl -n ${NAMESPACE} get pods -o wide | grep -E 'dynamo-operator|controller-manager'" >&2
+  echo "  kubectl -n ${NAMESPACE} get svc dynamo-platform-dynamo-operator-webhook-service -o yaml" >&2
+  echo "  kubectl -n ${NAMESPACE} get endpoints dynamo-platform-dynamo-operator-webhook-service -o yaml" >&2
+  echo "  kubectl -n ${NAMESPACE} logs deploy/dynamo-platform-dynamo-operator-controller-manager -c manager --tail=200" >&2
+  exit 1
+fi
 
 popd >/dev/null
 
