@@ -12,7 +12,7 @@ spec:
   backend: trtllm
 
   profilingConfig:
-    profilerImage: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.1"
+    profilerImage: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.9.0"
     configMapRef:
       name: qwen-config
       key: disagg.yaml  # Must match the key used in --from-file
@@ -31,6 +31,6 @@ spec:
         aicBackendVersion: "1.0.0"
 
   deploymentOverrides:
-    workersImage: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.8.1"
+    workersImage: "nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.9.0"
 
   autoApply: true
