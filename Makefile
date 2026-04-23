@@ -1,9 +1,10 @@
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
 
-RELEASE_VERSION ?= 0.9.0
+RELEASE_VERSION ?= 1.0.2
 CHART_VERSION ?= $(RELEASE_VERSION)
-DISABLE_ETCD_NATS ?= auto
+DYNAMO_STORAGE_CLASS ?= local-path
+PROMETHEUS_ENDPOINT ?= http://prometheus-server.monitoring.svc.cluster.local
 
 .PHONY: help k8s dynamo install benchmark-env all
 
@@ -18,7 +19,7 @@ k8s:
 	sudo -E ./k8s-single-node-cilium.sh
 
 dynamo:
-	RELEASE_VERSION="$(RELEASE_VERSION)" CHART_VERSION="$(CHART_VERSION)" DISABLE_ETCD_NATS="$(DISABLE_ETCD_NATS)" ./install-dynamo-1node.sh
+	RELEASE_VERSION="$(RELEASE_VERSION)" CHART_VERSION="$(CHART_VERSION)" DYNAMO_STORAGE_CLASS="$(DYNAMO_STORAGE_CLASS)" PROMETHEUS_ENDPOINT="$(PROMETHEUS_ENDPOINT)" ./install-dynamo-1node.sh
 
 install: k8s dynamo
 

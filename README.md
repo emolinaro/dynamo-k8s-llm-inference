@@ -27,6 +27,12 @@ You can use the Makefile shortcuts or run the scripts directly.
 make install
 ```
 
+The Makefile shortcut uses `DYNAMO_STORAGE_CLASS=local-path` for the local single-node cluster. To use the `csi-rbd-sc` topology from the Dynamo install instructions, run:
+
+```bash
+DYNAMO_STORAGE_CLASS=csi-rbd-sc make dynamo
+```
+
 Setup the benchmark Python environment:
 
 ```bash
@@ -42,9 +48,9 @@ Run a benchmark:
 Override any script env vars inline:
 
 ```bash
-RELEASE_VERSION=0.9.0 make dynamo
-K8S_REPO_MINOR=v1.35 POD_CIDR=10.1.0.0/16 make k8s
-RELEASE_VERSION=0.9.0 CHART_VERSION=0.9.0 make dynamo
+RELEASE_VERSION=1.0.2 make dynamo
+K8S_REPO_MINOR=v1.36 POD_CIDR=10.1.0.0/16 make k8s
+DYNAMO_STORAGE_CLASS=csi-rbd-sc make dynamo
 ```
 
 ### Option B: Scripts
@@ -98,16 +104,24 @@ cilium hubble ui -n kube-system
 Install NVIDIA Dynamo Platform and GPU Operator:
 
 ```bash
-export RELEASE_VERSION=0.9.0  # Adjust to match your Dynamo release version
+export RELEASE_VERSION=1.0.2
 ./install-dynamo-1node.sh
 ```
 
 This script will:
-- Install a default StorageClass (local-path-provisioner) for single-node clusters
-- Install Dynamo CRDs and Platform components
+- Verify the configured StorageClass for Dynamo stateful components
+- Pull the Dynamo Platform chart from NGC
+- Apply Dynamo CRDs manually with server-side apply
+- Install or upgrade Dynamo Platform using the 1.0.x Helm value keys
 - Wait for the operator webhook service endpoint to be ready
 - Install NVIDIA GPU Operator to enable GPU scheduling
 - Verify that GPUs are allocatable in Kubernetes
+
+The default `DYNAMO_STORAGE_CLASS` uses `local-path`, matching the single-node cluster setup in this repo. To use the `csi-rbd-sc` topology from the Dynamo install instructions, run:
+
+```bash
+DYNAMO_STORAGE_CLASS=csi-rbd-sc ./install-dynamo-1node.sh
+```
 
 If you're installing on a shared cluster where Dynamo CRDs already exist, skip CRD installation:
 
@@ -118,21 +132,7 @@ SKIP_CRDS=true ./install-dynamo-1node.sh
 If chart publication lags behind a release tag, pin chart version separately:
 
 ```bash
-RELEASE_VERSION=0.9.0 CHART_VERSION=<published-chart-version> ./install-dynamo-1node.sh
-```
-
-This installer now uses NGC Helm charts only. If `0.9.0` charts are not published yet, wait for chart publication or set `CHART_VERSION` to an already published version.
-
-For `0.9.x`, bundled `etcd` and `nats` are disabled by default (`DISABLE_ETCD_NATS=auto`). Override if needed:
-
-```bash
-DISABLE_ETCD_NATS=false ./install-dynamo-1node.sh
-```
-
-If you need to force NGC chart transport mode:
-
-```bash
-HELM_CHART_MODE=oci ./install-dynamo-1node.sh
+RELEASE_VERSION=1.0.2 CHART_VERSION=<published-chart-version> ./install-dynamo-1node.sh
 ```
 
 ### 3. Deploy from an Example Manifest
@@ -185,7 +185,7 @@ This provides an interactive interface that:
 Sets up a single-node Kubernetes cluster on Ubuntu 24.04.
 
 **Configuration:**
-- `K8S_REPO_MINOR`: Kubernetes version (default: `v1.35`)
+- `K8S_REPO_MINOR`: Kubernetes version (default: `v1.36`)
 - `CLUSTER_NAME`: Cluster name (default: `k8s-single`)
 - `POD_CIDR`: Pod network CIDR (default: `10.0.0.0/16`)
 - `ENABLE_HUBBLE`: Enable Hubble observability (default: `true`)
@@ -198,12 +198,18 @@ Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 
 **Configuration:**
 - `NAMESPACE`: Dynamo namespace (default: `dynamo-system`)
-- `RELEASE_VERSION`: Dynamo release/runtime version (default: `0.9.0`)
+- `RELEASE_NAME`: Dynamo Helm release name (default: `dynamo-platform`)
+- `RELEASE_VERSION`: Dynamo release/runtime version (default: `1.0.2`)
 - `CHART_VERSION`: Dynamo Helm chart version (default: `RELEASE_VERSION`)
-- `NAMESPACE_RESTRICTED_OPERATOR`: Enable namespace restriction (default: `false`)
+- `CHART_URL`: Dynamo Platform chart URL (default: NGC `dynamo-platform-${CHART_VERSION}.tgz`)
+- `NAMESPACE_RESTRICTED_OPERATOR`: Enable namespace restriction (default: `true`)
 - `SKIP_CRDS`: Skip CRD installation (default: `false`)
-- `DISABLE_ETCD_NATS`: Disable bundled `etcd`/`nats`: `auto` | `true` | `false` (default: `auto`)
-- `HELM_CHART_MODE`: NGC chart transport mode: `auto` | `oci` | `http` (default: `auto`)
+- `DYNAMO_STORAGE_CLASS`: StorageClass for bundled `etcd` and NATS JetStream (default: `local-path`)
+- `INSTALL_BUNDLED_ETCD`: Install bundled `etcd` (default: `true`)
+- `ENABLE_GROVE`: Enable Grove components (default: `false`)
+- `ENABLE_KAI_SCHEDULER`: Enable KAI Scheduler components (default: `false`)
+- `PROMETHEUS_ENDPOINT`: Dynamo metrics endpoint (default: `http://prometheus-server.monitoring.svc.cluster.local`)
+- `PLATFORM_HELM_TIMEOUT`: Helm wait timeout for Dynamo Platform (default: `30m`)
 - `OPERATOR_WEBHOOK_TIMEOUT`: Timeout in seconds for operator webhook readiness (default: `600`)
 - `GPU_OPERATOR_NS`: GPU Operator namespace (default: `gpu-operator`)
 

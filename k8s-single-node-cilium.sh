@@ -14,7 +14,7 @@ set -euo pipefail
 # User-tunable configuration   #
 #------------------------------#
 
-K8S_REPO_MINOR="${K8S_REPO_MINOR:-v1.35}"
+K8S_REPO_MINOR="${K8S_REPO_MINOR:-v1.36}"
 CLUSTER_NAME="${CLUSTER_NAME:-k8s-single}"
 POD_CIDR="${POD_CIDR:-10.0.0.0/16}"
 ENABLE_HUBBLE="${ENABLE_HUBBLE:-true}"

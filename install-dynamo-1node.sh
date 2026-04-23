@@ -2,90 +2,86 @@
 set -euo pipefail
 
 ##################################################################################
-# Install NVIDIA Dynamo Platform on a 1-node Kubernetes cluster
+# Install or upgrade NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 #
-# What this script does (in order):
-#  1) Validates cluster access (kubectl) and Helm availability.
-#  2) Installs a default StorageClass (local-path-provisioner) for single-node
-#     clusters that need PVCs (optional but recommended).
-#  3) Installs Dynamo CRDs (cluster-scoped) as required by the official guide.
-#  4) Installs the Dynamo Platform Helm chart into a chosen namespace.
-#  5) Waits and verifies pods + PVCs become ready/bound.
-#  6) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu and
-#     GPU workloads (like vLLM decode workers) can schedule successfully.
-#  7) Checks if nvidia-smi is available on the host; if not, deploys a helper pod.
+# This script follows the Dynamo 1.0.x install/upgrade flow:
+#  1) Validates cluster access and Helm availability.
+#  2) Verifies the storage class used by Dynamo stateful components.
+#  3) Pulls the Dynamo Platform Helm chart archive from NGC.
+#  4) Applies Dynamo CRDs manually from the chart with server-side apply.
+#  5) Installs/upgrades the Dynamo Platform chart with 1.0.x Helm value keys.
+#  6) Waits and verifies pods + PVCs become ready/bound.
+#  7) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu.
 ##################################################################################
 
 # -----------------------------
 # User-configurable variables
 # -----------------------------
 
-# Namespace where Dynamo platform will be installed
+# Namespace where Dynamo platform will be installed.
 NAMESPACE="${NAMESPACE:-dynamo-system}"
 
-# Dynamo release version you intend to deploy against.
-# Keep this aligned with your manifests/runtime images.
-RELEASE_VERSION="${RELEASE_VERSION:-0.9.0}"
+# Helm release name for Dynamo Platform.
+RELEASE_NAME="${RELEASE_NAME:-dynamo-platform}"
 
-# Helm chart version to install for dynamo-crds and dynamo-platform.
-# Defaults to RELEASE_VERSION, but can be pinned independently when chart
-# publication lags behind a source-code release tag.
-CHART_VERSION="${CHART_VERSION:-${RELEASE_VERSION}}"
+# Dynamo release/runtime version you intend to deploy against.
+RELEASE_VERSION="${RELEASE_VERSION:-1.0.2}"
 
-# If you are on a shared/multi-tenant cluster and need namespace restriction, set:
-# export NAMESPACE_RESTRICTED_OPERATOR=true
-NAMESPACE_RESTRICTED_OPERATOR="${NAMESPACE_RESTRICTED_OPERATOR:-false}"
+# Helm chart version to install. NGC chart versions do not use a leading "v".
+CHART_VERSION="${CHART_VERSION:-${RELEASE_VERSION#v}}"
+CHART_URL="${CHART_URL:-https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-${CHART_VERSION}.tgz}"
 
-# Skip CRD installation (useful for shared clusters with existing CRDs)
+# The 1.0.x namespace-restricted flow applies CRDs manually, then tells Helm
+# not to let the operator pod create/upgrade cluster-scoped CRDs.
+NAMESPACE_RESTRICTED_OPERATOR="${NAMESPACE_RESTRICTED_OPERATOR:-true}"
 SKIP_CRDS="${SKIP_CRDS:-false}"
 
-# Control bundled etcd/nats subcharts in dynamo-platform.
-# Values: auto|true|false
-# - auto: disable for RELEASE_VERSION >= 0.9, enable otherwise
-# - true: always disable bundled etcd/nats
-# - false: always keep bundled etcd/nats enabled
-DISABLE_ETCD_NATS="${DISABLE_ETCD_NATS:-auto}"
+# Storage class used by bundled etcd persistence and NATS JetStream.
+# Keep the repo's single-node default behavior by using local-path. Set
+# DYNAMO_STORAGE_CLASS=csi-rbd-sc to match the referenced install instructions.
+DYNAMO_STORAGE_CLASS="${DYNAMO_STORAGE_CLASS:-local-path}"
 
-# Helm chart transport mode:
-# - auto: try OCI first, fall back to legacy https fetch
-# - oci: force OCI registry (oci://helm.ngc.nvidia.com/...)
-# - http: force legacy https fetch (https://helm.ngc.nvidia.com/...)
-HELM_CHART_MODE="${HELM_CHART_MODE:-auto}"
-
-# Optional multinode components (NOT needed for 1-node cluster; keep false)
+# Preserve the 1.0.x topology from INSTALL_INSTRUCTIONS.md.
+INSTALL_BUNDLED_ETCD="${INSTALL_BUNDLED_ETCD:-true}"
 ENABLE_GROVE="${ENABLE_GROVE:-false}"
 ENABLE_KAI_SCHEDULER="${ENABLE_KAI_SCHEDULER:-false}"
 
-# Prometheus endpoint URL (where Dynamo sends metrics)
-# Default: kube-prometheus-stack Prometheus service in monitoring namespace
-PROMETHEUS_ENDPOINT="${PROMETHEUS_ENDPOINT:-http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090}"
+# Prometheus endpoint URL where Dynamo sends metrics.
+PROMETHEUS_ENDPOINT="${PROMETHEUS_ENDPOINT:-http://prometheus-server.monitoring.svc.cluster.local}"
 
-# Timeout for operator + webhook readiness check
+# Optional Hugging Face token secret. If HF_TOKEN is empty, this step is skipped.
+HF_TOKEN="${HF_TOKEN:-}"
+HF_TOKEN_SECRET_NAME="${HF_TOKEN_SECRET_NAME:-hf-token-secret}"
+
+# Timeout for platform install and operator webhook readiness checks.
+PLATFORM_HELM_TIMEOUT="${PLATFORM_HELM_TIMEOUT:-30m}"
 OPERATOR_WEBHOOK_TIMEOUT="${OPERATOR_WEBHOOK_TIMEOUT:-600}"
 
-# Local-path provisioner manifest URL (lightweight dynamic PV provisioning)
+# Local-path provisioner manifest URL. Used only when DYNAMO_STORAGE_CLASS=local-path
+# and the local-path StorageClass is not already installed.
 LOCAL_PATH_MANIFEST_URL="${LOCAL_PATH_MANIFEST_URL:-https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml}"
 
 # -----------------------------
 # GPU Operator configuration
 # -----------------------------
 
-# Namespace where GPU Operator will be installed
 GPU_OPERATOR_NS="${GPU_OPERATOR_NS:-gpu-operator}"
-
-# Helm release name for GPU Operator
 GPU_OPERATOR_RELEASE="${GPU_OPERATOR_RELEASE:-gpu-operator}"
-
-# NVIDIA Helm repo (hosts gpu-operator chart)
 NVIDIA_HELM_REPO_NAME="${NVIDIA_HELM_REPO_NAME:-nvidia}"
 NVIDIA_HELM_REPO_URL="${NVIDIA_HELM_REPO_URL:-https://helm.ngc.nvidia.com/nvidia}"
-
-# Helm wait timeout for GPU Operator install/upgrade
 GPU_OPERATOR_HELM_TIMEOUT="${GPU_OPERATOR_HELM_TIMEOUT:-15m}"
-
-# Wait tuning for nvidia.com/gpu to appear in node allocatable
 GPU_ALLOCATABLE_WAIT_ATTEMPTS="${GPU_ALLOCATABLE_WAIT_ATTEMPTS:-120}"
 GPU_ALLOCATABLE_WAIT_INTERVAL="${GPU_ALLOCATABLE_WAIT_INTERVAL:-5}"
+
+# -----------------------------
+# Derived values
+# -----------------------------
+
+DYNAMO_OPERATOR_DEPLOYMENT="${DYNAMO_OPERATOR_DEPLOYMENT:-${RELEASE_NAME}-dynamo-operator-controller-manager}"
+DYNAMO_OPERATOR_WEBHOOK_SERVICE="${DYNAMO_OPERATOR_WEBHOOK_SERVICE:-${RELEASE_NAME}-dynamo-operator-webhook-service}"
+DYNAMO_CHART_ARCHIVE=""
+DYNAMO_CHART_DIR=""
+DYNAMO_CRDS_DIR=""
 
 # -----------------------------
 # Helpers
@@ -94,111 +90,20 @@ GPU_ALLOCATABLE_WAIT_INTERVAL="${GPU_ALLOCATABLE_WAIT_INTERVAL:-5}"
 log() { echo -e "\n==> $*\n"; }
 
 need_cmd() {
-  # Validate required commands exist before doing any work.
   if ! command -v "$1" >/dev/null 2>&1; then
     echo "ERROR: Required command not found: $1" >&2
     exit 1
   fi
 }
 
-helm_install_chart() {
-  local release="$1"
-  local chart="$2"
-  local namespace="$3"
-  shift 3
-  local extra_args=("$@")
+validate_bool() {
+  local name="$1"
+  local value="$2"
 
-  local oci_chart="oci://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/${chart}"
-  local http_chart="https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/${chart}-${CHART_VERSION}.tgz"
-  local oci_err_file
-  local http_err_file
-  oci_err_file="$(mktemp)"
-  http_err_file="$(mktemp)"
-
-  case "${HELM_CHART_MODE}" in
-    oci)
-      if ! helm upgrade --install "${release}" "${oci_chart}" --version "${CHART_VERSION}" \
-        --namespace "${namespace}" "${extra_args[@]}" 2> >(tee "${oci_err_file}" >&2); then
-        if grep -Eqi '400: Bad Request|404|manifest unknown|not found|FetchReference' "${oci_err_file}"; then
-          echo "ERROR: Dynamo chart '${chart}' version '${CHART_VERSION}' was not found in NGC OCI registry." >&2
-          echo "Try a published chart version, for example:" >&2
-          echo "  CHART_VERSION=<published-chart-version> RELEASE_VERSION=${RELEASE_VERSION} ./install-dynamo-1node.sh" >&2
-        fi
-        rm -f "${oci_err_file}" "${http_err_file}"
-        return 1
-      fi
-      rm -f "${oci_err_file}" "${http_err_file}"
-      ;;
-    http)
-      if ! helm fetch "${http_chart}" 2> >(tee "${http_err_file}" >&2); then
-        if grep -Eqi '404|not found' "${http_err_file}"; then
-          echo "ERROR: Dynamo chart '${chart}' version '${CHART_VERSION}' was not found in NGC HTTP repo." >&2
-          echo "Try a published chart version, for example:" >&2
-          echo "  CHART_VERSION=<published-chart-version> RELEASE_VERSION=${RELEASE_VERSION} ./install-dynamo-1node.sh" >&2
-        fi
-        rm -f "${oci_err_file}" "${http_err_file}"
-        return 1
-      fi
-      helm upgrade --install "${release}" "${chart}-${CHART_VERSION}.tgz" \
-        --namespace "${namespace}" "${extra_args[@]}"
-      rm -f "${oci_err_file}" "${http_err_file}"
-      ;;
-    auto)
-      if helm upgrade --install "${release}" "${oci_chart}" --version "${CHART_VERSION}" \
-        --namespace "${namespace}" "${extra_args[@]}" 2> >(tee "${oci_err_file}" >&2); then
-        rm -f "${oci_err_file}" "${http_err_file}"
-        return 0
-      fi
-      echo "WARN: OCI install failed for ${chart}. Falling back to legacy https fetch..." >&2
-      if ! helm fetch "${http_chart}" 2> >(tee "${http_err_file}" >&2); then
-        if grep -Eqi '400: Bad Request|404|manifest unknown|not found|FetchReference' "${oci_err_file}" || \
-           grep -Eqi '404|not found' "${http_err_file}"; then
-          echo "ERROR: Dynamo chart '${chart}' version '${CHART_VERSION}' is not published in NGC (OCI/HTTP)." >&2
-          echo "To continue, set CHART_VERSION to an available chart version, for example:" >&2
-          echo "  CHART_VERSION=<published-chart-version> RELEASE_VERSION=${RELEASE_VERSION} ./install-dynamo-1node.sh" >&2
-          echo "You can list versions with:" >&2
-          echo "  helm repo add ai-dynamo https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts" >&2
-          echo "  helm repo update && helm search repo ai-dynamo/${chart} --versions | head" >&2
-        fi
-        rm -f "${oci_err_file}" "${http_err_file}"
-        return 1
-      fi
-      helm upgrade --install "${release}" "${chart}-${CHART_VERSION}.tgz" \
-        --namespace "${namespace}" "${extra_args[@]}"
-      rm -f "${oci_err_file}" "${http_err_file}"
-      ;;
+  case "${value}" in
+    true|false) ;;
     *)
-      echo "ERROR: HELM_CHART_MODE must be one of: auto|oci|http" >&2
-      exit 1
-      ;;
-  esac
-}
-
-release_ge_0_9() {
-  local ver major minor
-  ver="${RELEASE_VERSION#v}"
-  major="$(printf '%s' "${ver}" | cut -d. -f1 | sed 's/[^0-9].*$//')"
-  minor="$(printf '%s' "${ver}" | cut -d. -f2 | sed 's/[^0-9].*$//')"
-
-  if [[ ! "${major}" =~ ^[0-9]+$ || ! "${minor}" =~ ^[0-9]+$ ]]; then
-    return 1
-  fi
-
-  (( major > 0 || (major == 0 && minor >= 9) ))
-}
-
-should_disable_etcd_nats() {
-  case "${DISABLE_ETCD_NATS}" in
-    true) return 0 ;;
-    false) return 1 ;;
-    auto)
-      if release_ge_0_9; then
-        return 0
-      fi
-      return 1
-      ;;
-    *)
-      echo "ERROR: DISABLE_ETCD_NATS must be one of: auto|true|false" >&2
+      echo "ERROR: ${name} must be true or false; got '${value}'." >&2
       exit 1
       ;;
   esac
@@ -208,9 +113,131 @@ json_escape() {
   printf '%s' "$1" | sed 's/\\/\\\\/g; s/"/\\"/g'
 }
 
+storage_class_exists() {
+  kubectl get storageclass "$1" >/dev/null 2>&1
+}
+
+install_local_path_storage_class() {
+  log "Installing local-path-provisioner for single-node dynamic PVs"
+  kubectl apply -f "${LOCAL_PATH_MANIFEST_URL}"
+  kubectl -n local-path-storage rollout status deploy/local-path-provisioner --timeout=300s
+  kubectl patch storageclass local-path \
+    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
+}
+
+ensure_dynamo_storage_class() {
+  log "Step 1: Verify Dynamo storage class: ${DYNAMO_STORAGE_CLASS}"
+
+  if [[ -z "${DYNAMO_STORAGE_CLASS}" ]]; then
+    echo "ERROR: DYNAMO_STORAGE_CLASS cannot be empty." >&2
+    exit 1
+  fi
+
+  if storage_class_exists "${DYNAMO_STORAGE_CLASS}"; then
+    echo "Dynamo storage class exists: ${DYNAMO_STORAGE_CLASS}"
+  elif [[ "${DYNAMO_STORAGE_CLASS}" == "local-path" ]]; then
+    install_local_path_storage_class
+  else
+    echo "ERROR: StorageClass '${DYNAMO_STORAGE_CLASS}' does not exist." >&2
+    echo "Create it before running this script, or use DYNAMO_STORAGE_CLASS=local-path for a local single-node cluster." >&2
+    exit 1
+  fi
+
+  echo
+  echo "StorageClasses:"
+  kubectl get storageclass
+}
+
+snapshot_existing_release() {
+  if ! helm status "${RELEASE_NAME}" -n "${NAMESPACE}" >/dev/null 2>&1; then
+    return 0
+  fi
+
+  log "Snapshot existing ${RELEASE_NAME} release before upgrade"
+  helm list -n "${NAMESPACE}" || true
+  helm history "${RELEASE_NAME}" -n "${NAMESPACE}" || true
+  helm get values "${RELEASE_NAME}" -n "${NAMESPACE}" -o yaml \
+    >"/tmp/${RELEASE_NAME}.values.before-${CHART_VERSION}.yaml" || true
+  echo "Saved current Helm values to /tmp/${RELEASE_NAME}.values.before-${CHART_VERSION}.yaml"
+}
+
+prepare_dynamo_chart() {
+  local workdir="$1"
+  local expected_archive="${workdir}/dynamo-platform-${CHART_VERSION}.tgz"
+  local chart_extract_dir="${workdir}/dynamo-platform-${CHART_VERSION}"
+  local candidate
+
+  log "Step 2: Pull Dynamo Platform chart ${CHART_VERSION}"
+  helm pull "${CHART_URL}" -d "${workdir}"
+
+  if [[ -f "${expected_archive}" ]]; then
+    DYNAMO_CHART_ARCHIVE="${expected_archive}"
+  else
+    for candidate in "${workdir}"/dynamo-platform-*.tgz; do
+      if [[ -f "${candidate}" ]]; then
+        DYNAMO_CHART_ARCHIVE="${candidate}"
+        break
+      fi
+    done
+  fi
+
+  if [[ -z "${DYNAMO_CHART_ARCHIVE}" || ! -f "${DYNAMO_CHART_ARCHIVE}" ]]; then
+    echo "ERROR: Could not find pulled dynamo-platform chart archive in ${workdir}." >&2
+    exit 1
+  fi
+
+  helm show chart "${DYNAMO_CHART_ARCHIVE}"
+
+  mkdir -p "${chart_extract_dir}"
+  tar -xf "${DYNAMO_CHART_ARCHIVE}" -C "${chart_extract_dir}"
+
+  DYNAMO_CHART_DIR="${chart_extract_dir}/dynamo-platform"
+  DYNAMO_CRDS_DIR="${DYNAMO_CHART_DIR}/charts/dynamo-operator/crds"
+
+  if [[ ! -d "${DYNAMO_CHART_DIR}" ]]; then
+    echo "ERROR: Extracted chart directory not found: ${DYNAMO_CHART_DIR}" >&2
+    exit 1
+  fi
+
+  if [[ ! -d "${DYNAMO_CRDS_DIR}" ]]; then
+    echo "ERROR: Dynamo operator CRD directory not found: ${DYNAMO_CRDS_DIR}" >&2
+    exit 1
+  fi
+}
+
+apply_dynamo_crds() {
+  log "Step 3: Apply Dynamo CRDs manually"
+
+  if [[ "${SKIP_CRDS}" == "true" ]]; then
+    echo "SKIP_CRDS=true -> skipping CRD installation."
+    return 0
+  fi
+
+  kubectl apply --server-side --force-conflicts -f "${DYNAMO_CRDS_DIR}/"
+
+  echo
+  echo "Dynamo CRDs:"
+  if ! kubectl get crd | grep -E 'dynamo(checkpoints|componentdeployments|graphdeploymentrequests|graphdeployments|graphdeploymentscalingadapters|models|workermetadatas)\.nvidia\.com'; then
+    echo "WARN: Expected Dynamo CRD names were not found in kubectl output." >&2
+  fi
+}
+
+create_hf_token_secret_if_requested() {
+  if [[ -z "${HF_TOKEN}" ]]; then
+    echo "HF_TOKEN is not set; skipping ${HF_TOKEN_SECRET_NAME} creation."
+    return 0
+  fi
+
+  log "Create or update ${HF_TOKEN_SECRET_NAME}"
+  kubectl create namespace "${NAMESPACE}" >/dev/null 2>&1 || true
+  kubectl -n "${NAMESPACE}" create secret generic "${HF_TOKEN_SECRET_NAME}" \
+    --from-literal=HF_TOKEN="${HF_TOKEN}" \
+    --dry-run=client -o yaml | kubectl apply -f -
+}
+
 remove_operator_enable_webhooks_flag_if_present() {
   local namespace="$1"
-  local deploy_name="dynamo-platform-dynamo-operator-controller-manager"
+  local deploy_name="${DYNAMO_OPERATOR_DEPLOYMENT}"
   local target_index="0"
   local args_raw
   local filtered=()
@@ -218,7 +245,6 @@ remove_operator_enable_webhooks_flag_if_present() {
   local args_json="["
   local arg
 
-  # Helm can return before the deployment object is fully visible.
   for _ in {1..30}; do
     if kubectl -n "${namespace}" get deploy "${deploy_name}" >/dev/null 2>&1; then
       break
@@ -266,13 +292,6 @@ remove_operator_enable_webhooks_flag_if_present() {
     -p="[{\"op\":\"add\",\"path\":\"/spec/template/spec/containers/${target_index}/args\",\"value\":${args_json}}]"
 }
 
-kube_wait_rollout() {
-  # Wait for a deployment to become available
-  local ns="$1"
-  local deploy="$2"
-  kubectl -n "$ns" rollout status "deploy/$deploy" --timeout=300s
-}
-
 wait_for_service_endpoints() {
   local ns="$1"
   local svc="$2"
@@ -292,42 +311,180 @@ wait_for_service_endpoints() {
   done
 }
 
+install_or_upgrade_dynamo_platform() {
+  local -a helm_flags
+  helm_flags=(
+    --create-namespace
+    --wait
+    --timeout "${PLATFORM_HELM_TIMEOUT}"
+    --set "dynamo-operator.upgradeCRD=false"
+    --set "dynamo-operator.namespaceRestriction.enabled=${NAMESPACE_RESTRICTED_OPERATOR}"
+    --set "global.etcd.install=${INSTALL_BUNDLED_ETCD}"
+    --set "global.grove.install=${ENABLE_GROVE}"
+    --set "global.grove.enabled=${ENABLE_GROVE}"
+    --set "global.kai-scheduler.install=${ENABLE_KAI_SCHEDULER}"
+    --set "global.kai-scheduler.enabled=${ENABLE_KAI_SCHEDULER}"
+    --set "nats.config.jetstream.fileStore.pvc.storageClassName=${DYNAMO_STORAGE_CLASS}"
+  )
+
+  if [[ "${INSTALL_BUNDLED_ETCD}" == "true" ]]; then
+    helm_flags+=(--set "etcd.persistence.storageClass=${DYNAMO_STORAGE_CLASS}")
+  fi
+
+  if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
+    helm_flags+=(--set-string "dynamo-operator.dynamo.metrics.prometheusEndpoint=${PROMETHEUS_ENDPOINT}")
+  fi
+
+  log "Step 4: Install or upgrade Dynamo Platform ${CHART_VERSION}"
+  helm upgrade --install "${RELEASE_NAME}" "${DYNAMO_CHART_ARCHIVE}" \
+    -n "${NAMESPACE}" "${helm_flags[@]}"
+
+  remove_operator_enable_webhooks_flag_if_present "${NAMESPACE}"
+}
+
+verify_dynamo_platform() {
+  log "Step 5: Verify Dynamo operator webhook endpoint is ready"
+  kubectl -n "${NAMESPACE}" rollout status "deploy/${DYNAMO_OPERATOR_DEPLOYMENT}" \
+    --timeout="${OPERATOR_WEBHOOK_TIMEOUT}s"
+
+  if ! wait_for_service_endpoints "${NAMESPACE}" "${DYNAMO_OPERATOR_WEBHOOK_SERVICE}" "${OPERATOR_WEBHOOK_TIMEOUT}"; then
+    echo "ERROR: Dynamo webhook service has no ready endpoints after install." >&2
+    echo "Debug:" >&2
+    echo "  kubectl -n ${NAMESPACE} get pods -o wide | grep -E 'dynamo-operator|controller-manager'" >&2
+    echo "  kubectl -n ${NAMESPACE} get svc ${DYNAMO_OPERATOR_WEBHOOK_SERVICE} -o yaml" >&2
+    echo "  kubectl -n ${NAMESPACE} get endpoints ${DYNAMO_OPERATOR_WEBHOOK_SERVICE} -o yaml" >&2
+    echo "  kubectl -n ${NAMESPACE} logs deploy/${DYNAMO_OPERATOR_DEPLOYMENT} -c manager --tail=200" >&2
+    exit 1
+  fi
+
+  log "Step 6: Verify pods and PVCs"
+  echo "Current pods in ${NAMESPACE}:"
+  kubectl get pods -n "${NAMESPACE}" -o wide || true
+
+  echo
+  echo "Current PVCs in ${NAMESPACE}:"
+  kubectl get pvc -n "${NAMESPACE}" || true
+
+  log "Waiting for platform deployments to become Available..."
+  DEPLOYS="$(kubectl -n "${NAMESPACE}" get deploy -o name 2>/dev/null || true)"
+  if [[ -n "${DEPLOYS}" ]]; then
+    while read -r deploy; do
+      [[ -z "${deploy}" ]] && continue
+      kubectl -n "${NAMESPACE}" rollout status "${deploy}" --timeout=600s
+    done <<< "${DEPLOYS}"
+  else
+    echo "No deployments found in namespace ${NAMESPACE} yet."
+  fi
+
+  log "Waiting for platform StatefulSets to become Ready..."
+  STATEFULSETS="$(kubectl -n "${NAMESPACE}" get sts -o name 2>/dev/null || true)"
+  if [[ -n "${STATEFULSETS}" ]]; then
+    while read -r sts; do
+      [[ -z "${sts}" ]] && continue
+      kubectl -n "${NAMESPACE}" rollout status "${sts}" --timeout=600s
+    done <<< "${STATEFULSETS}"
+  else
+    echo "No StatefulSets found in namespace ${NAMESPACE}."
+  fi
+
+  log "Final Dynamo status"
+  helm list -n "${NAMESPACE}"
+  helm history "${RELEASE_NAME}" -n "${NAMESPACE}" || true
+  kubectl get crd | grep -i dynamo || true
+  kubectl get pods -n "${NAMESPACE}" -o wide
+  kubectl get svc -n "${NAMESPACE}" | grep -E -i 'webhook|dynamo-operator|etcd|nats' || true
+  kubectl get statefulset -n "${NAMESPACE}" || true
+  kubectl get pvc -n "${NAMESPACE}" || true
+}
+
+install_gpu_operator() {
+  log "Step 7: Install NVIDIA GPU Operator (enables nvidia.com/gpu in Kubernetes)"
+
+  log "Adding/updating NVIDIA Helm repo (GPU Operator chart source)"
+  helm repo add "${NVIDIA_HELM_REPO_NAME}" "${NVIDIA_HELM_REPO_URL}" >/dev/null 2>&1 || true
+  helm repo update >/dev/null
+
+  log "Creating GPU Operator namespace"
+  kubectl create namespace "${GPU_OPERATOR_NS}" >/dev/null 2>&1 || true
+
+  log "Installing/upgrading GPU Operator (containerd runtime, with --wait)"
+  helm upgrade --install "${GPU_OPERATOR_RELEASE}" "${NVIDIA_HELM_REPO_NAME}/gpu-operator" \
+    -n "${GPU_OPERATOR_NS}" \
+    --set operator.defaultRuntime=containerd \
+    --wait \
+    --timeout "${GPU_OPERATOR_HELM_TIMEOUT}"
+
+  log "Waiting for GPU Operator pods to be Running/Completed"
+  for _ in {1..180}; do
+    NOT_READY="$(kubectl get pods -n "${GPU_OPERATOR_NS}" --no-headers 2>/dev/null \
+      | awk '$3!="Running" && $3!="Completed" {print}' | wc -l | tr -d ' ')"
+    if [[ "${NOT_READY}" == "0" ]]; then
+      break
+    fi
+    sleep 5
+  done
+
+  kubectl get pods -n "${GPU_OPERATOR_NS}"
+
+  log "Verifying GPUs are visible to Kubernetes (nvidia.com/gpu allocatable)"
+  kubectl get nodes -o custom-columns=NAME:.metadata.name,GPUS:.status.allocatable.nvidia\\.com/gpu
+
+  log "Waiting for nvidia.com/gpu to appear in node allocatable"
+  GPU_COUNT=""
+  for ((i=1; i<=GPU_ALLOCATABLE_WAIT_ATTEMPTS; i++)); do
+    GPU_COUNT="$(kubectl get nodes -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo "")"
+    if [[ -n "${GPU_COUNT}" && "${GPU_COUNT}" != "0" ]]; then
+      break
+    fi
+    sleep "${GPU_ALLOCATABLE_WAIT_INTERVAL}"
+  done
+
+  if [[ -z "${GPU_COUNT}" || "${GPU_COUNT}" == "0" ]]; then
+    echo "ERROR: Kubernetes still shows 0 GPUs allocatable. GPU Operator may not be fully ready." >&2
+    echo "Debug:" >&2
+    echo "  kubectl get pods -n ${GPU_OPERATOR_NS}" >&2
+    echo "  kubectl -n ${GPU_OPERATOR_NS} get events --sort-by=.lastTimestamp | tail -n 50" >&2
+    exit 1
+  fi
+
+  log "GPU Operator is installed and GPUs are available to schedule"
+}
+
 # -----------------------------
-# 0) Pre-flight checks
+# Main
 # -----------------------------
 
-log "Pre-flight: verify kubectl + helm are available"
+log "Pre-flight: verify required commands"
 need_cmd kubectl
 need_cmd helm
+need_cmd tar
+need_cmd grep
+need_cmd awk
+
+validate_bool NAMESPACE_RESTRICTED_OPERATOR "${NAMESPACE_RESTRICTED_OPERATOR}"
+validate_bool SKIP_CRDS "${SKIP_CRDS}"
+validate_bool INSTALL_BUNDLED_ETCD "${INSTALL_BUNDLED_ETCD}"
+validate_bool ENABLE_GROVE "${ENABLE_GROVE}"
+validate_bool ENABLE_KAI_SCHEDULER "${ENABLE_KAI_SCHEDULER}"
 
 log "Pre-flight: verify kubectl can talk to the cluster"
-# Why: fail early if kubeconfig is wrong or the cluster is down.
 kubectl version --client >/dev/null
 kubectl get nodes >/dev/null
 
-if [[ -z "${RELEASE_VERSION}" ]]; then
-  cat >&2 <<'EOF'
-ERROR: RELEASE_VERSION is not set.
-
-Set it like:
-  export RELEASE_VERSION=0.x.y
-
-Then re-run the script.
-EOF
-  exit 1
-fi
-
 log "Using configuration:"
 echo "  NAMESPACE=${NAMESPACE}"
+echo "  RELEASE_NAME=${RELEASE_NAME}"
 echo "  RELEASE_VERSION=${RELEASE_VERSION}"
 echo "  CHART_VERSION=${CHART_VERSION}"
+echo "  CHART_URL=${CHART_URL}"
 echo "  NAMESPACE_RESTRICTED_OPERATOR=${NAMESPACE_RESTRICTED_OPERATOR}"
 echo "  SKIP_CRDS=${SKIP_CRDS}"
-echo "  DISABLE_ETCD_NATS=${DISABLE_ETCD_NATS}"
-echo "  HELM_CHART_MODE=${HELM_CHART_MODE}"
+echo "  DYNAMO_STORAGE_CLASS=${DYNAMO_STORAGE_CLASS}"
+echo "  INSTALL_BUNDLED_ETCD=${INSTALL_BUNDLED_ETCD}"
 echo "  ENABLE_GROVE=${ENABLE_GROVE}"
 echo "  ENABLE_KAI_SCHEDULER=${ENABLE_KAI_SCHEDULER}"
 echo "  PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}"
+echo "  PLATFORM_HELM_TIMEOUT=${PLATFORM_HELM_TIMEOUT}"
 echo "  OPERATOR_WEBHOOK_TIMEOUT=${OPERATOR_WEBHOOK_TIMEOUT}"
 echo "  GPU_OPERATOR_NS=${GPU_OPERATOR_NS}"
 echo "  GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}"
@@ -335,246 +492,26 @@ echo "  GPU_OPERATOR_HELM_TIMEOUT=${GPU_OPERATOR_HELM_TIMEOUT}"
 echo "  GPU_ALLOCATABLE_WAIT_ATTEMPTS=${GPU_ALLOCATABLE_WAIT_ATTEMPTS}"
 echo "  GPU_ALLOCATABLE_WAIT_INTERVAL=${GPU_ALLOCATABLE_WAIT_INTERVAL}"
 
-if [[ "${CHART_VERSION}" != "${RELEASE_VERSION}" ]]; then
-  echo "NOTE: CHART_VERSION (${CHART_VERSION}) differs from RELEASE_VERSION (${RELEASE_VERSION})."
-fi
-
-# -----------------------------
-# 1) Ensure default StorageClass exists (1-node correction)
-# -----------------------------
-
-log "Step 1: Ensure a default StorageClass exists (recommended for PVCs on 1-node clusters)"
-# Why: Some Dynamo components or workloads may request PersistentVolumes.
-#      Many 1-node kubeadm clusters have no dynamic provisioner by default.
-
-if ! kubectl get storageclass >/dev/null 2>&1; then
-  # Not expected to fail normally, but keep a clear message.
-  echo "ERROR: Unable to list StorageClasses. Check cluster RBAC." >&2
-  exit 1
-fi
-
-DEFAULT_SC="$(kubectl get storageclass -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.metadata.annotations.storageclass\.kubernetes\.io/is-default-class}{"\n"}{end}' \
-  | awk '$2=="true"{print $1; exit}')"
-
-if [[ -n "${DEFAULT_SC}" ]]; then
-  echo "A default StorageClass already exists: ${DEFAULT_SC}"
-else
-  echo "No default StorageClass found. Installing local-path-provisioner for single-node dynamic PVs..."
-
-  # Install local-path provisioner
-  # Why: provides dynamic PersistentVolumes backed by local disk on the node.
-  kubectl apply -f "${LOCAL_PATH_MANIFEST_URL}"
-
-  # Wait for local-path provisioner to be ready
-  # Why: ensures the provisioner can satisfy PVCs before installing Dynamo.
-  kubectl -n local-path-storage rollout status deploy/local-path-provisioner --timeout=300s
-
-  # Mark local-path as default StorageClass
-  # Why: PVCs that omit storageClassName will use the default class automatically.
-  kubectl patch storageclass local-path \
-    -p '{"metadata":{"annotations":{"storageclass.kubernetes.io/is-default-class":"true"}}}'
-
-  echo "Default StorageClass set to: local-path"
-fi
-
-log "StorageClasses:"
-kubectl get storageclass
-
-# -----------------------------
-# 2) Install Dynamo CRDs (official step)
-# -----------------------------
-
-log "Step 2: Install Dynamo CRDs (cluster-scoped; per official guide)"
-# Why: CRDs define Dynamo custom resources that the operator watches/manages.
+ensure_dynamo_storage_class
+create_hf_token_secret_if_requested
+snapshot_existing_release
 
 WORKDIR="$(mktemp -d)"
 trap 'rm -rf "${WORKDIR}"' EXIT
 
-if [[ "${SKIP_CRDS}" == "true" ]]; then
-  echo "SKIP_CRDS=true -> skipping CRD installation."
-else
-  if kubectl get crd -o name | grep -qi "dynamo"; then
-    echo "Detected existing Dynamo CRDs."
-    echo "If this is a shared cluster, set SKIP_CRDS=true to skip reinstalling CRDs."
-  fi
+prepare_dynamo_chart "${WORKDIR}"
+apply_dynamo_crds
+install_or_upgrade_dynamo_platform
+verify_dynamo_platform
 
-  pushd "${WORKDIR}" >/dev/null
-
-  # Use upgrade --install so the script can be re-run safely.
-  helm_install_chart "dynamo-crds" "dynamo-crds" "default"
-
-  popd >/dev/null
-fi
-
-# -----------------------------
-# 3) Install Dynamo Platform (official step)
-# -----------------------------
-
-log "Step 3: Install Dynamo Platform (per official guide) into namespace: ${NAMESPACE}"
-# Why: This installs the operator and core platform services.
-
-pushd "${WORKDIR}" >/dev/null
-
-# Build Helm flags based on options.
-HELM_FLAGS=(--create-namespace)
-
-# Keep webhook explicitly enabled (defensive). We rely on admission webhooks for
-# early validation and deploy-incluster depends on this endpoint.
-HELM_FLAGS+=(--set "dynamo-operator.webhook.enabled=true")
-
-if [[ "${NAMESPACE_RESTRICTED_OPERATOR}" == "true" ]]; then
-  HELM_FLAGS+=(--set "dynamo-operator.namespaceRestriction.enabled=true")
-fi
-
-if [[ "${ENABLE_GROVE}" == "true" ]]; then
-  HELM_FLAGS+=(--set "grove.enabled=true")
-fi
-if [[ "${ENABLE_KAI_SCHEDULER}" == "true" ]]; then
-  HELM_FLAGS+=(--set "kai-scheduler.enabled=true")
-fi
-
-if should_disable_etcd_nats; then
-  HELM_FLAGS+=(--set "nats.enabled=false")
-  HELM_FLAGS+=(--set "etcd.enabled=false")
-  echo "Bundled nats/etcd disabled (DISABLE_ETCD_NATS=${DISABLE_ETCD_NATS}, RELEASE_VERSION=${RELEASE_VERSION})"
-fi
-
-# Configure Prometheus endpoint (where Dynamo sends metrics)
-if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
-  HELM_FLAGS+=(--set "prometheusEndpoint=${PROMETHEUS_ENDPOINT}")
-  echo "Prometheus endpoint configured: ${PROMETHEUS_ENDPOINT}"
-fi
-
-helm_install_chart "dynamo-platform" "dynamo-platform" "${NAMESPACE}" "${HELM_FLAGS[@]}"
-remove_operator_enable_webhooks_flag_if_present "${NAMESPACE}"
-
-log "Step 3a: Verify Dynamo operator webhook endpoint is ready"
-kubectl -n "${NAMESPACE}" rollout status deploy/dynamo-platform-dynamo-operator-controller-manager \
-  --timeout="${OPERATOR_WEBHOOK_TIMEOUT}s"
-if ! wait_for_service_endpoints "${NAMESPACE}" "dynamo-platform-dynamo-operator-webhook-service" "${OPERATOR_WEBHOOK_TIMEOUT}"; then
-  echo "ERROR: Dynamo webhook service has no ready endpoints after install." >&2
-  echo "Debug:" >&2
-  echo "  kubectl -n ${NAMESPACE} get pods -o wide | grep -E 'dynamo-operator|controller-manager'" >&2
-  echo "  kubectl -n ${NAMESPACE} get svc dynamo-platform-dynamo-operator-webhook-service -o yaml" >&2
-  echo "  kubectl -n ${NAMESPACE} get endpoints dynamo-platform-dynamo-operator-webhook-service -o yaml" >&2
-  echo "  kubectl -n ${NAMESPACE} logs deploy/dynamo-platform-dynamo-operator-controller-manager -c manager --tail=200" >&2
-  exit 1
-fi
-
-popd >/dev/null
-
-# -----------------------------
-# 4) Wait for readiness and show useful diagnostics
-# -----------------------------
-
-log "Step 4: Verify pods and PVCs"
-# Why: If PVCs don't bind, stateful components may stay Pending.
-
-echo "Current pods in ${NAMESPACE}:"
-kubectl get pods -n "${NAMESPACE}" -o wide || true
-
-echo
-echo "Current PVCs in ${NAMESPACE}:"
-kubectl get pvc -n "${NAMESPACE}" || true
-
-log "Waiting for platform deployments to become Available..."
-DEPLOYS="$(kubectl -n "${NAMESPACE}" get deploy -o name 2>/dev/null || true)"
-if [[ -n "${DEPLOYS}" ]]; then
-  while read -r deploy; do
-    [[ -z "${deploy}" ]] && continue
-    kubectl -n "${NAMESPACE}" rollout status "${deploy}" --timeout=600s
-  done <<< "${DEPLOYS}"
-else
-  echo "No deployments found in namespace ${NAMESPACE} yet."
-fi
-
-log "Waiting for platform StatefulSets to become Ready..."
-STATEFULSETS="$(kubectl -n "${NAMESPACE}" get sts -o name 2>/dev/null || true)"
-if [[ -n "${STATEFULSETS}" ]]; then
-  while read -r sts; do
-    [[ -z "${sts}" ]] && continue
-    kubectl -n "${NAMESPACE}" rollout status "${sts}" --timeout=600s
-  done <<< "${STATEFULSETS}"
-else
-  echo "No StatefulSets found in namespace ${NAMESPACE}."
-fi
-
-log "Final status:"
-kubectl get pods -n "${NAMESPACE}" -o wide
-kubectl get pvc -n "${NAMESPACE}" || true
-
-log "Dynamo platform installed for 1-node cluster ✅"
+log "Dynamo Platform ${CHART_VERSION} installed/upgraded"
 
 if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
-  echo ""
+  echo
   echo "Prometheus endpoint configured:"
-  echo "  - Dynamo will send metrics to: ${PROMETHEUS_ENDPOINT}"
-  echo "  - Ensure Prometheus is installed and accessible at this endpoint"
-  echo "  - If using kube-prometheus-stack, the default endpoint is:"
-  echo "    http://prometheus-kube-prometheus-prometheus.monitoring.svc.cluster.local:9090"
+  echo "  ${PROMETHEUS_ENDPOINT}"
 fi
 
-# -----------------------------
-# 5) Install NVIDIA GPU Operator (so GPU workloads can schedule)
-# -----------------------------
+install_gpu_operator
 
-log "Step 5: Install NVIDIA GPU Operator (enables nvidia.com/gpu in Kubernetes)"
-# Why:
-# - Your node has GPUs (nvidia-smi works), but Kubernetes only schedules GPU pods
-#   once the NVIDIA device plugin is running and advertising nvidia.com/gpu.
-# - GPU Operator installs the device plugin + container toolkit integration and
-#   keeps them healthy over time.
-
-log "Adding/updating NVIDIA Helm repo (GPU Operator chart source)"
-helm repo add "${NVIDIA_HELM_REPO_NAME}" "${NVIDIA_HELM_REPO_URL}" >/dev/null 2>&1 || true
-helm repo update >/dev/null
-
-log "Creating GPU Operator namespace (keeps GPU components isolated)"
-kubectl create namespace "${GPU_OPERATOR_NS}" >/dev/null 2>&1 || true
-
-log "Installing/upgrading GPU Operator (containerd runtime, with --wait)"
-# Note: operator.defaultRuntime=containerd matches your kubeadm/containerd setup.
-helm upgrade --install "${GPU_OPERATOR_RELEASE}" "${NVIDIA_HELM_REPO_NAME}/gpu-operator" \
-  -n "${GPU_OPERATOR_NS}" \
-  --set operator.defaultRuntime=containerd \
-  --wait \
-  --timeout "${GPU_OPERATOR_HELM_TIMEOUT}"
-
-log "Waiting for GPU Operator pods to be Running/Completed"
-# Why: device plugin + toolkit DaemonSets must be ready before GPUs appear on nodes.
-for i in {1..180}; do
-  NOT_READY="$(kubectl get pods -n "${GPU_OPERATOR_NS}" --no-headers 2>/dev/null \
-    | awk '$3!="Running" && $3!="Completed" {print}' | wc -l | tr -d ' ')"
-  if [[ "${NOT_READY}" == "0" ]]; then
-    break
-  fi
-  sleep 5
-done
-
-kubectl get pods -n "${GPU_OPERATOR_NS}"
-
-log "Verifying GPUs are visible to Kubernetes (nvidia.com/gpu allocatable)"
-kubectl get nodes -o custom-columns=NAME:.metadata.name,GPUS:.status.allocatable.nvidia\\.com/gpu
-
-# It can take a while after pods are Running/Completed for node allocatable to update.
-log "Waiting for nvidia.com/gpu to appear in node allocatable"
-GPU_COUNT=""
-for ((i=1; i<=GPU_ALLOCATABLE_WAIT_ATTEMPTS; i++)); do
-  GPU_COUNT="$(kubectl get nodes -o jsonpath='{.items[0].status.allocatable.nvidia\.com/gpu}' 2>/dev/null || echo "")"
-  if [[ -n "${GPU_COUNT}" && "${GPU_COUNT}" != "0" ]]; then
-    break
-  fi
-  sleep "${GPU_ALLOCATABLE_WAIT_INTERVAL}"
-done
-
-if [[ -z "${GPU_COUNT}" || "${GPU_COUNT}" == "0" ]]; then
-  echo "ERROR: Kubernetes still shows 0 GPUs allocatable. GPU Operator may not be fully ready." >&2
-  echo "Debug:" >&2
-  echo "  kubectl get pods -n ${GPU_OPERATOR_NS}" >&2
-  echo "  kubectl -n ${GPU_OPERATOR_NS} get events --sort-by=.lastTimestamp | tail -n 50" >&2
-  exit 1
-fi
-
-log "GPU Operator is installed and GPUs are available to schedule ✅"
-
-echo "Next: Deploy a Dynamo GPU workload (e.g., vLLM decode worker) and ensure nvcr.io image pull works."
+echo "Next: deploy a Dynamo GPU workload and ensure nvcr.io image pull works."
