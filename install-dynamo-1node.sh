@@ -61,6 +61,14 @@ OPERATOR_WEBHOOK_TIMEOUT="${OPERATOR_WEBHOOK_TIMEOUT:-600}"
 # and the local-path StorageClass is not already installed.
 LOCAL_PATH_MANIFEST_URL="${LOCAL_PATH_MANIFEST_URL:-https://raw.githubusercontent.com/rancher/local-path-provisioner/master/deploy/local-path-storage.yaml}"
 
+# Resume support. Completed step markers are stored under DYNAMO_INSTALL_STATE_DIR
+# so reruns can continue after the last successfully completed step.
+RESUME_INSTALL="${RESUME_INSTALL:-true}"
+RESET_RESUME_STATE="${RESET_RESUME_STATE:-false}"
+DYNAMO_INSTALL_STATE_ROOT="${DYNAMO_INSTALL_STATE_ROOT:-${HOME}/.cache/dynamo-k8s-llm-inference}"
+DYNAMO_INSTALL_STATE_DIR="${DYNAMO_INSTALL_STATE_DIR:-}"
+DYNAMO_WORKDIR="${DYNAMO_WORKDIR:-}"
+
 # -----------------------------
 # GPU Operator configuration
 # -----------------------------
@@ -82,6 +90,7 @@ DYNAMO_OPERATOR_WEBHOOK_SERVICE="${DYNAMO_OPERATOR_WEBHOOK_SERVICE:-${RELEASE_NA
 DYNAMO_CHART_ARCHIVE=""
 DYNAMO_CHART_DIR=""
 DYNAMO_CRDS_DIR=""
+DYNAMO_STEP_DIR=""
 
 # -----------------------------
 # Helpers
@@ -107,6 +116,89 @@ validate_bool() {
       exit 1
       ;;
   esac
+}
+
+resume_fingerprint_input() {
+  cat <<EOF
+NAMESPACE=${NAMESPACE}
+RELEASE_NAME=${RELEASE_NAME}
+RELEASE_VERSION=${RELEASE_VERSION}
+CHART_VERSION=${CHART_VERSION}
+CHART_URL=${CHART_URL}
+NAMESPACE_RESTRICTED_OPERATOR=${NAMESPACE_RESTRICTED_OPERATOR}
+SKIP_CRDS=${SKIP_CRDS}
+DYNAMO_STORAGE_CLASS=${DYNAMO_STORAGE_CLASS}
+INSTALL_BUNDLED_ETCD=${INSTALL_BUNDLED_ETCD}
+ENABLE_GROVE=${ENABLE_GROVE}
+ENABLE_KAI_SCHEDULER=${ENABLE_KAI_SCHEDULER}
+PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}
+HF_TOKEN_SECRET_NAME=${HF_TOKEN_SECRET_NAME}
+PLATFORM_HELM_TIMEOUT=${PLATFORM_HELM_TIMEOUT}
+OPERATOR_WEBHOOK_TIMEOUT=${OPERATOR_WEBHOOK_TIMEOUT}
+GPU_OPERATOR_NS=${GPU_OPERATOR_NS}
+GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}
+NVIDIA_HELM_REPO_NAME=${NVIDIA_HELM_REPO_NAME}
+NVIDIA_HELM_REPO_URL=${NVIDIA_HELM_REPO_URL}
+GPU_OPERATOR_HELM_TIMEOUT=${GPU_OPERATOR_HELM_TIMEOUT}
+GPU_ALLOCATABLE_WAIT_ATTEMPTS=${GPU_ALLOCATABLE_WAIT_ATTEMPTS}
+GPU_ALLOCATABLE_WAIT_INTERVAL=${GPU_ALLOCATABLE_WAIT_INTERVAL}
+EOF
+}
+
+configure_resume_state() {
+  local fingerprint
+
+  fingerprint="$(resume_fingerprint_input | cksum | awk '{print $1}')"
+
+  if [[ -z "${DYNAMO_INSTALL_STATE_DIR}" ]]; then
+    DYNAMO_INSTALL_STATE_DIR="${DYNAMO_INSTALL_STATE_ROOT}/install-dynamo-1node-${fingerprint}"
+  fi
+  if [[ -z "${DYNAMO_WORKDIR}" ]]; then
+    DYNAMO_WORKDIR="${DYNAMO_INSTALL_STATE_DIR}/work"
+  fi
+  DYNAMO_STEP_DIR="${DYNAMO_INSTALL_STATE_DIR}/steps"
+
+  if [[ "${RESET_RESUME_STATE}" == "true" ]]; then
+    echo "RESET_RESUME_STATE=true -> clearing ${DYNAMO_INSTALL_STATE_DIR}"
+    rm -rf "${DYNAMO_INSTALL_STATE_DIR}"
+  fi
+
+  mkdir -p "${DYNAMO_STEP_DIR}" "${DYNAMO_WORKDIR}"
+  resume_fingerprint_input >"${DYNAMO_INSTALL_STATE_DIR}/config.txt"
+}
+
+step_marker() {
+  local step_name="$1"
+  printf '%s/%s.done' "${DYNAMO_STEP_DIR}" "${step_name}"
+}
+
+step_done() {
+  local step_name="$1"
+
+  [[ "${RESUME_INSTALL}" == "true" && -f "$(step_marker "${step_name}")" ]]
+}
+
+mark_step_done() {
+  local step_name="$1"
+
+  if [[ "${RESUME_INSTALL}" != "true" ]]; then
+    return 0
+  fi
+
+  date -u +"%Y-%m-%dT%H:%M:%SZ" >"$(step_marker "${step_name}")"
+}
+
+run_step() {
+  local step_name="$1"
+  shift
+
+  if step_done "${step_name}"; then
+    echo "Resume: skipping completed step '${step_name}'."
+    return 0
+  fi
+
+  "$@"
+  mark_step_done "${step_name}"
 }
 
 json_escape() {
@@ -168,7 +260,13 @@ prepare_dynamo_chart() {
   local candidate
 
   log "Step 2: Pull Dynamo Platform chart ${CHART_VERSION}"
-  helm pull "${CHART_URL}" -d "${workdir}"
+  mkdir -p "${workdir}"
+
+  if [[ -f "${expected_archive}" ]]; then
+    echo "Reusing chart archive: ${expected_archive}"
+  else
+    helm pull "${CHART_URL}" -d "${workdir}"
+  fi
 
   if [[ -f "${expected_archive}" ]]; then
     DYNAMO_CHART_ARCHIVE="${expected_archive}"
@@ -188,8 +286,12 @@ prepare_dynamo_chart() {
 
   helm show chart "${DYNAMO_CHART_ARCHIVE}"
 
-  mkdir -p "${chart_extract_dir}"
-  tar -xf "${DYNAMO_CHART_ARCHIVE}" -C "${chart_extract_dir}"
+  if [[ -d "${chart_extract_dir}/dynamo-platform" ]]; then
+    echo "Reusing extracted chart directory: ${chart_extract_dir}/dynamo-platform"
+  else
+    mkdir -p "${chart_extract_dir}"
+    tar -xf "${DYNAMO_CHART_ARCHIVE}" -C "${chart_extract_dir}"
+  fi
 
   DYNAMO_CHART_DIR="${chart_extract_dir}/dynamo-platform"
   DYNAMO_CRDS_DIR="${DYNAMO_CHART_DIR}/charts/dynamo-operator/crds"
@@ -256,6 +358,7 @@ remove_operator_enable_webhooks_flag_if_present() {
     return 0
   fi
 
+  # shellcheck disable=SC2016
   target_index="$(kubectl -n "${namespace}" get deploy "${deploy_name}" \
     -o go-template='{{range $i, $c := .spec.template.spec.containers}}{{if eq $c.name "manager"}}{{$i}}{{end}}{{end}}' 2>/dev/null || true)"
   if [[ -z "${target_index}" ]]; then
@@ -460,12 +563,17 @@ need_cmd helm
 need_cmd tar
 need_cmd grep
 need_cmd awk
+need_cmd cksum
 
 validate_bool NAMESPACE_RESTRICTED_OPERATOR "${NAMESPACE_RESTRICTED_OPERATOR}"
 validate_bool SKIP_CRDS "${SKIP_CRDS}"
 validate_bool INSTALL_BUNDLED_ETCD "${INSTALL_BUNDLED_ETCD}"
 validate_bool ENABLE_GROVE "${ENABLE_GROVE}"
 validate_bool ENABLE_KAI_SCHEDULER "${ENABLE_KAI_SCHEDULER}"
+validate_bool RESUME_INSTALL "${RESUME_INSTALL}"
+validate_bool RESET_RESUME_STATE "${RESET_RESUME_STATE}"
+
+configure_resume_state
 
 log "Pre-flight: verify kubectl can talk to the cluster"
 kubectl version --client >/dev/null
@@ -491,18 +599,19 @@ echo "  GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}"
 echo "  GPU_OPERATOR_HELM_TIMEOUT=${GPU_OPERATOR_HELM_TIMEOUT}"
 echo "  GPU_ALLOCATABLE_WAIT_ATTEMPTS=${GPU_ALLOCATABLE_WAIT_ATTEMPTS}"
 echo "  GPU_ALLOCATABLE_WAIT_INTERVAL=${GPU_ALLOCATABLE_WAIT_INTERVAL}"
+echo "  RESUME_INSTALL=${RESUME_INSTALL}"
+echo "  RESET_RESUME_STATE=${RESET_RESUME_STATE}"
+echo "  DYNAMO_INSTALL_STATE_DIR=${DYNAMO_INSTALL_STATE_DIR}"
+echo "  DYNAMO_WORKDIR=${DYNAMO_WORKDIR}"
 
-ensure_dynamo_storage_class
+run_step "storage_class" ensure_dynamo_storage_class
 create_hf_token_secret_if_requested
-snapshot_existing_release
+run_step "snapshot_existing_release" snapshot_existing_release
 
-WORKDIR="$(mktemp -d)"
-trap 'rm -rf "${WORKDIR}"' EXIT
-
-prepare_dynamo_chart "${WORKDIR}"
-apply_dynamo_crds
-install_or_upgrade_dynamo_platform
-verify_dynamo_platform
+prepare_dynamo_chart "${DYNAMO_WORKDIR}"
+run_step "apply_dynamo_crds" apply_dynamo_crds
+run_step "install_or_upgrade_dynamo_platform" install_or_upgrade_dynamo_platform
+run_step "verify_dynamo_platform" verify_dynamo_platform
 
 log "Dynamo Platform ${CHART_VERSION} installed/upgraded"
 
@@ -512,6 +621,6 @@ if [[ -n "${PROMETHEUS_ENDPOINT}" ]]; then
   echo "  ${PROMETHEUS_ENDPOINT}"
 fi
 
-install_gpu_operator
+run_step "install_gpu_operator" install_gpu_operator
 
 echo "Next: deploy a Dynamo GPU workload and ensure nvcr.io image pull works."

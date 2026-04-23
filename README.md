@@ -69,6 +69,12 @@ This script will:
 - Install Cilium CNI with optional Hubble support
 - Configure kubectl for your user
 
+If the run fails partway through, re-run the same command. The script records completed steps under `K8S_INSTALL_STATE_DIR`, skips those steps on the next run, and continues from the last incomplete step. To force a clean run with the same settings:
+
+```bash
+sudo -E env RESET_RESUME_STATE=true ./k8s-single-node-cilium.sh
+```
+
 **Note:** After running this script, you may need to log out and back in, or run:
 ```bash
 export KUBECONFIG=$HOME/.kube/config
@@ -116,6 +122,12 @@ This script will:
 - Wait for the operator webhook service endpoint to be ready
 - Install NVIDIA GPU Operator to enable GPU scheduling
 - Verify that GPUs are allocatable in Kubernetes
+
+If the run fails, re-run the same command. The installer records completed steps under `DYNAMO_INSTALL_STATE_DIR` and resumes after the last successful step. To force a clean run with the same settings:
+
+```bash
+RESET_RESUME_STATE=true ./install-dynamo-1node.sh
+```
 
 The default `DYNAMO_STORAGE_CLASS` uses `local-path`, matching the single-node cluster setup in this repo. To use the `csi-rbd-sc` topology from the Dynamo install instructions, run:
 
@@ -186,12 +198,17 @@ Sets up a single-node Kubernetes cluster on Ubuntu 24.04.
 
 **Configuration:**
 - `K8S_REPO_MINOR`: Kubernetes version (default: `v1.36`)
+- `K8S_DEP_REPO_MINOR`: Fallback Kubernetes repo for `cri-tools`/`kubernetes-cni` when the selected repo lacks those dependencies (default: `v1.35`)
 - `CLUSTER_NAME`: Cluster name (default: `k8s-single`)
 - `POD_CIDR`: Pod network CIDR (default: `10.0.0.0/16`)
 - `ENABLE_HUBBLE`: Enable Hubble observability (default: `true`)
 - `HELM_VERSION`: Helm version to install (default: `v4.1.0`)
 - `INSTALL_HELM`: Install Helm (default: `true`)
 - `INSTALL_PROMETHEUS_STACK`: Install kube-prometheus-stack (default: `true`)
+- `RESUME_INSTALL`: Skip completed installer steps on rerun (default: `true`)
+- `RESET_RESUME_STATE`: Clear saved installer state before running (default: `false`)
+- `K8S_INSTALL_STATE_ROOT`: Base directory for resume state (default: `/var/lib/dynamo-k8s-llm-inference`)
+- `K8S_INSTALL_STATE_DIR`: Explicit resume state directory (default: derived from install settings)
 
 ### `install-dynamo-1node.sh`
 Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
@@ -212,6 +229,11 @@ Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 - `PLATFORM_HELM_TIMEOUT`: Helm wait timeout for Dynamo Platform (default: `30m`)
 - `OPERATOR_WEBHOOK_TIMEOUT`: Timeout in seconds for operator webhook readiness (default: `600`)
 - `GPU_OPERATOR_NS`: GPU Operator namespace (default: `gpu-operator`)
+- `RESUME_INSTALL`: Skip completed installer steps on rerun (default: `true`)
+- `RESET_RESUME_STATE`: Clear saved installer state before running (default: `false`)
+- `DYNAMO_INSTALL_STATE_ROOT`: Base directory for resume state (default: `$HOME/.cache/dynamo-k8s-llm-inference`)
+- `DYNAMO_INSTALL_STATE_DIR`: Explicit resume state directory (default: derived from install settings)
+- `DYNAMO_WORKDIR`: Directory for downloaded/extracted Dynamo chart artifacts (default: `$DYNAMO_INSTALL_STATE_DIR/work`)
 
 ### `deploy-incluster.sh`
 Applies a user-provided Dynamo manifest file as-is (no YAML patching) and exposes services via NodePort.
