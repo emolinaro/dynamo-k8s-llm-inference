@@ -118,7 +118,7 @@ This script will:
 - Verify the configured StorageClass for Dynamo stateful components
 - Pull the Dynamo Platform chart from NGC
 - Apply Dynamo CRDs manually with server-side apply
-- Install or upgrade Dynamo Platform using the 1.0.x Helm value keys
+- Install or upgrade Dynamo Platform using the 1.0.x Helm value keys while telling Helm to skip chart CRD installation
 - Wait for the operator webhook service endpoint to be ready
 - Install NVIDIA GPU Operator to enable GPU scheduling
 - Verify that GPUs are allocatable in Kubernetes
@@ -127,6 +127,13 @@ If the run fails, re-run the same command. The installer records completed steps
 
 ```bash
 RESET_RESUME_STATE=true ./install-dynamo-1node.sh
+```
+
+For a test cluster without GPUs, skip the GPU Operator entirely or allow the install to continue without allocatable GPUs:
+
+```bash
+INSTALL_GPU_OPERATOR=false make dynamo
+REQUIRE_GPUS=false make dynamo
 ```
 
 The default `DYNAMO_STORAGE_CLASS` uses `local-path`, matching the single-node cluster setup in this repo. To use the `csi-rbd-sc` topology from the Dynamo install instructions, run:
@@ -228,6 +235,8 @@ Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 - `PROMETHEUS_ENDPOINT`: Dynamo metrics endpoint (default: `http://prometheus-server.monitoring.svc.cluster.local`)
 - `PLATFORM_HELM_TIMEOUT`: Helm wait timeout for Dynamo Platform (default: `30m`)
 - `OPERATOR_WEBHOOK_TIMEOUT`: Timeout in seconds for operator webhook readiness (default: `600`)
+- `INSTALL_GPU_OPERATOR`: Install NVIDIA GPU Operator (default: `true`)
+- `REQUIRE_GPUS`: Fail if no `nvidia.com/gpu` resources become allocatable (default: `true`)
 - `GPU_OPERATOR_NS`: GPU Operator namespace (default: `gpu-operator`)
 - `RESUME_INSTALL`: Skip completed installer steps on rerun (default: `true`)
 - `RESET_RESUME_STATE`: Clear saved installer state before running (default: `false`)

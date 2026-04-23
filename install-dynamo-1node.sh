@@ -73,6 +73,8 @@ DYNAMO_WORKDIR="${DYNAMO_WORKDIR:-}"
 # GPU Operator configuration
 # -----------------------------
 
+INSTALL_GPU_OPERATOR="${INSTALL_GPU_OPERATOR:-true}"
+REQUIRE_GPUS="${REQUIRE_GPUS:-true}"
 GPU_OPERATOR_NS="${GPU_OPERATOR_NS:-gpu-operator}"
 GPU_OPERATOR_RELEASE="${GPU_OPERATOR_RELEASE:-gpu-operator}"
 NVIDIA_HELM_REPO_NAME="${NVIDIA_HELM_REPO_NAME:-nvidia}"
@@ -135,6 +137,8 @@ PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}
 HF_TOKEN_SECRET_NAME=${HF_TOKEN_SECRET_NAME}
 PLATFORM_HELM_TIMEOUT=${PLATFORM_HELM_TIMEOUT}
 OPERATOR_WEBHOOK_TIMEOUT=${OPERATOR_WEBHOOK_TIMEOUT}
+INSTALL_GPU_OPERATOR=${INSTALL_GPU_OPERATOR}
+REQUIRE_GPUS=${REQUIRE_GPUS}
 GPU_OPERATOR_NS=${GPU_OPERATOR_NS}
 GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}
 NVIDIA_HELM_REPO_NAME=${NVIDIA_HELM_REPO_NAME}
@@ -418,6 +422,7 @@ install_or_upgrade_dynamo_platform() {
   local -a helm_flags
   helm_flags=(
     --create-namespace
+    --skip-crds
     --wait
     --timeout "${PLATFORM_HELM_TIMEOUT}"
     --set "dynamo-operator.upgradeCRD=false"
@@ -501,6 +506,12 @@ verify_dynamo_platform() {
 }
 
 install_gpu_operator() {
+  if [[ "${INSTALL_GPU_OPERATOR}" != "true" ]]; then
+    log "Step 7: Skip NVIDIA GPU Operator"
+    echo "INSTALL_GPU_OPERATOR=${INSTALL_GPU_OPERATOR}; skipping GPU Operator installation and GPU verification."
+    return 0
+  fi
+
   log "Step 7: Install NVIDIA GPU Operator (enables nvidia.com/gpu in Kubernetes)"
 
   log "Adding/updating NVIDIA Helm repo (GPU Operator chart source)"
@@ -543,6 +554,11 @@ install_gpu_operator() {
   done
 
   if [[ -z "${GPU_COUNT}" || "${GPU_COUNT}" == "0" ]]; then
+    if [[ "${REQUIRE_GPUS}" != "true" ]]; then
+      echo "WARN: Kubernetes shows 0 GPUs allocatable, but REQUIRE_GPUS=${REQUIRE_GPUS}; continuing." >&2
+      return 0
+    fi
+
     echo "ERROR: Kubernetes still shows 0 GPUs allocatable. GPU Operator may not be fully ready." >&2
     echo "Debug:" >&2
     echo "  kubectl get pods -n ${GPU_OPERATOR_NS}" >&2
@@ -570,6 +586,8 @@ validate_bool SKIP_CRDS "${SKIP_CRDS}"
 validate_bool INSTALL_BUNDLED_ETCD "${INSTALL_BUNDLED_ETCD}"
 validate_bool ENABLE_GROVE "${ENABLE_GROVE}"
 validate_bool ENABLE_KAI_SCHEDULER "${ENABLE_KAI_SCHEDULER}"
+validate_bool INSTALL_GPU_OPERATOR "${INSTALL_GPU_OPERATOR}"
+validate_bool REQUIRE_GPUS "${REQUIRE_GPUS}"
 validate_bool RESUME_INSTALL "${RESUME_INSTALL}"
 validate_bool RESET_RESUME_STATE "${RESET_RESUME_STATE}"
 
@@ -594,6 +612,8 @@ echo "  ENABLE_KAI_SCHEDULER=${ENABLE_KAI_SCHEDULER}"
 echo "  PROMETHEUS_ENDPOINT=${PROMETHEUS_ENDPOINT}"
 echo "  PLATFORM_HELM_TIMEOUT=${PLATFORM_HELM_TIMEOUT}"
 echo "  OPERATOR_WEBHOOK_TIMEOUT=${OPERATOR_WEBHOOK_TIMEOUT}"
+echo "  INSTALL_GPU_OPERATOR=${INSTALL_GPU_OPERATOR}"
+echo "  REQUIRE_GPUS=${REQUIRE_GPUS}"
 echo "  GPU_OPERATOR_NS=${GPU_OPERATOR_NS}"
 echo "  GPU_OPERATOR_RELEASE=${GPU_OPERATOR_RELEASE}"
 echo "  GPU_OPERATOR_HELM_TIMEOUT=${GPU_OPERATOR_HELM_TIMEOUT}"
