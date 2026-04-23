@@ -17,7 +17,7 @@ spec:
       replicas: 1
       extraPodSpec:
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.9.0
+          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.0.2
     TRTLLMPrefillWorker:
       envFromSecret: hf-token-secret
       componentType: worker
@@ -34,7 +34,7 @@ spec:
           value: /home/dynamo/.cache/huggingface
       extraPodSpec:
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.9.0
+          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.0.2
           workingDir: /workspace/
           command:
           - python3
@@ -65,7 +65,7 @@ spec:
           value: /home/dynamo/.cache/huggingface
       extraPodSpec:
         mainContainer:
-          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:0.9.0
+          image: nvcr.io/nvidia/ai-dynamo/tensorrtllm-runtime:1.0.2
           workingDir: /workspace/
           command:
           - python3
