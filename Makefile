@@ -1,7 +1,7 @@
 SHELL := /usr/bin/env bash
 .SHELLFLAGS := -euo pipefail -c
 
-RELEASE_VERSION ?= 1.0.2
+RELEASE_VERSION ?= 1.1.0
 CHART_VERSION ?= $(RELEASE_VERSION)
 DYNAMO_STORAGE_CLASS ?= local-path
 PROMETHEUS_ENDPOINT ?= http://prometheus-server.monitoring.svc.cluster.local

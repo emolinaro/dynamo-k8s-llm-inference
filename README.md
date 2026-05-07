@@ -48,7 +48,7 @@ Run a benchmark:
 Override any script env vars inline:
 
 ```bash
-RELEASE_VERSION=1.0.2 make dynamo
+RELEASE_VERSION=1.1.0 make dynamo
 K8S_REPO_MINOR=v1.36 POD_CIDR=10.1.0.0/16 make k8s
 DYNAMO_STORAGE_CLASS=csi-rbd-sc make dynamo
 ```
@@ -110,7 +110,7 @@ cilium hubble ui -n kube-system
 Install NVIDIA Dynamo Platform and GPU Operator:
 
 ```bash
-export RELEASE_VERSION=1.0.2
+export RELEASE_VERSION=1.1.0
 ./install-dynamo-1node.sh
 ```
 
@@ -118,7 +118,7 @@ This script will:
 - Verify the configured StorageClass for Dynamo stateful components
 - Pull the Dynamo Platform chart from NGC
 - Apply Dynamo CRDs manually with server-side apply
-- Install or upgrade Dynamo Platform using the 1.0.x Helm value keys while telling Helm to skip chart CRD installation
+- Install or upgrade Dynamo Platform using the 1.x Helm value keys while telling Helm to skip chart CRD installation
 - Wait for the operator webhook service endpoint to be ready
 - Install NVIDIA GPU Operator to enable GPU scheduling
 - Verify that GPUs are allocatable in Kubernetes
@@ -151,7 +151,7 @@ SKIP_CRDS=true ./install-dynamo-1node.sh
 If chart publication lags behind a release tag, pin chart version separately:
 
 ```bash
-RELEASE_VERSION=1.0.2 CHART_VERSION=<published-chart-version> ./install-dynamo-1node.sh
+RELEASE_VERSION=1.1.0 CHART_VERSION=<published-chart-version> ./install-dynamo-1node.sh
 ```
 
 ### 3. Deploy from an Example Manifest
@@ -223,7 +223,7 @@ Installs NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 **Configuration:**
 - `NAMESPACE`: Dynamo namespace (default: `dynamo-system`)
 - `RELEASE_NAME`: Dynamo Helm release name (default: `dynamo-platform`)
-- `RELEASE_VERSION`: Dynamo release/runtime version (default: `1.0.2`)
+- `RELEASE_VERSION`: Dynamo release/runtime version (default: `1.1.0`)
 - `CHART_VERSION`: Dynamo Helm chart version (default: `RELEASE_VERSION`)
 - `CHART_URL`: Dynamo Platform chart URL (default: NGC `dynamo-platform-${CHART_VERSION}.tgz`)
 - `NAMESPACE_RESTRICTED_OPERATOR`: Enable namespace restriction (default: `true`)

@@ -4,12 +4,12 @@ set -euo pipefail
 ##################################################################################
 # Install or upgrade NVIDIA Dynamo Platform on a 1-node Kubernetes cluster.
 #
-# This script follows the Dynamo 1.0.x install/upgrade flow:
+# This script follows the Dynamo 1.x install/upgrade flow:
 #  1) Validates cluster access and Helm availability.
 #  2) Verifies the storage class used by Dynamo stateful components.
 #  3) Pulls the Dynamo Platform Helm chart archive from NGC.
 #  4) Applies Dynamo CRDs manually from the chart with server-side apply.
-#  5) Installs/upgrades the Dynamo Platform chart with 1.0.x Helm value keys.
+#  5) Installs/upgrades the Dynamo Platform chart with 1.x Helm value keys.
 #  6) Waits and verifies pods + PVCs become ready/bound.
 #  7) Installs NVIDIA GPU Operator so Kubernetes advertises nvidia.com/gpu.
 ##################################################################################
@@ -25,13 +25,13 @@ NAMESPACE="${NAMESPACE:-dynamo-system}"
 RELEASE_NAME="${RELEASE_NAME:-dynamo-platform}"
 
 # Dynamo release/runtime version you intend to deploy against.
-RELEASE_VERSION="${RELEASE_VERSION:-1.0.2}"
+RELEASE_VERSION="${RELEASE_VERSION:-1.1.0}"
 
 # Helm chart version to install. NGC chart versions do not use a leading "v".
 CHART_VERSION="${CHART_VERSION:-${RELEASE_VERSION#v}}"
 CHART_URL="${CHART_URL:-https://helm.ngc.nvidia.com/nvidia/ai-dynamo/charts/dynamo-platform-${CHART_VERSION}.tgz}"
 
-# The 1.0.x namespace-restricted flow applies CRDs manually, then tells Helm
+# The 1.x namespace-restricted flow applies CRDs manually, then tells Helm
 # not to let the operator pod create/upgrade cluster-scoped CRDs.
 NAMESPACE_RESTRICTED_OPERATOR="${NAMESPACE_RESTRICTED_OPERATOR:-true}"
 SKIP_CRDS="${SKIP_CRDS:-false}"
@@ -41,7 +41,7 @@ SKIP_CRDS="${SKIP_CRDS:-false}"
 # DYNAMO_STORAGE_CLASS=csi-rbd-sc to match the referenced install instructions.
 DYNAMO_STORAGE_CLASS="${DYNAMO_STORAGE_CLASS:-local-path}"
 
-# Preserve the 1.0.x topology from INSTALL_INSTRUCTIONS.md.
+# Preserve the 1.x topology from INSTALL_INSTRUCTIONS.md.
 INSTALL_BUNDLED_ETCD="${INSTALL_BUNDLED_ETCD:-true}"
 ENABLE_GROVE="${ENABLE_GROVE:-false}"
 ENABLE_KAI_SCHEDULER="${ENABLE_KAI_SCHEDULER:-false}"
